@@ -64,6 +64,18 @@ Environment variables customise behaviour via `pydantic` settings (prefix `ADSUM
 - `ADSUM_OPENAI_TRANSCRIPTION_MODEL`: Model used for OpenAI transcription.
 - `ADSUM_OPENAI_NOTES_MODEL`: Model used for OpenAI notes/summarisation.
 
+### Choosing a transcription backend
+
+ADsum ships with multiple transcription providers. The CLI and desktop window default to a lightweight `dummy` backend that
+returns placeholder text so automated tests can run offline. When you are ready to capture real speech, explicitly pick another
+provider:
+
+- **CLI** – pass `--transcription-backend openai` (or your preferred backend) to `adsum record` or `adsum ui` commands.
+- **Window UI** – open *Configure environment ▸ Transcription backend* and select a real provider before starting a session.
+
+If the dummy backend is still active when you start recording, both interfaces surface a prominent warning so you can switch to
+a real service before relying on the transcripts.
+
 ## Development
 
 Run the unit test suite:
