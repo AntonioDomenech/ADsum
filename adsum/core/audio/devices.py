@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from typing import List, Optional
 
 from ...logging import get_logger
+from .sounddevice_backend import wasapi_loopback_capable
 
 LOGGER = get_logger(__name__)
 
@@ -30,6 +31,8 @@ def list_input_devices() -> List[DeviceInfo]:
     hostapis = sd.query_hostapis()
     devices = sd.query_devices()
     results: List[DeviceInfo] = []
+    wasapi_loopback_supported: Optional[bool] = None
+
     for idx, info in enumerate(devices):
         hostapi = hostapis[info["hostapi"]]["name"] if hostapis else "unknown"
         name = info["name"]
@@ -39,11 +42,20 @@ def list_input_devices() -> List[DeviceInfo]:
 
         if max_input <= 0:
             if "wasapi" in hostapi.lower() and max_output > 0:
-                # Windows WASAPI output devices support loopback capture when
-                # explicitly requested. Surface them so users can select the
-                # system playback stream.
-                max_input = max_output
-                is_loopback = True
+                if wasapi_loopback_supported is None:
+                    wasapi_loopback_supported = wasapi_loopback_capable(sd)
+                if wasapi_loopback_supported:
+                    # Windows WASAPI output devices support loopback capture
+                    # when explicitly requested. Surface them so users can
+                    # select the system playback stream.
+                    max_input = max_output
+                    is_loopback = True
+                else:
+                    LOGGER.debug(
+                        "Skipping WASAPI output %s; loopback unsupported by sounddevice",
+                        name,
+                    )
+                    continue
             else:
                 continue
         results.append(
