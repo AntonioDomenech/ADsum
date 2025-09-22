@@ -52,7 +52,10 @@ def list_input_devices() -> List[DeviceInfo]:
 def format_device_table() -> str:
     devices = list_input_devices()
     if not devices:
-        return "No input devices detected. Ensure sounddevice is installed and audio hardware is accessible."
+        return (
+            "No input devices detected. Install optional audio support with "
+            "`pip install adsum[audio]` and ensure audio hardware is accessible."
+        )
 
     header = f"{'ID':>3} | {'Name':<40} | {'In':>2} | {'Rate':>7} | Host API | Loopback"
     lines = [header, "-" * len(header)]
