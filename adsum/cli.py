@@ -29,14 +29,19 @@ def _launch_ui(
 ) -> None:
     configure_logging()
     settings = get_settings()
+    resolved_mic = mic_device if mic_device is not None else settings.default_mic_device
+    resolved_system = (
+        system_device if system_device is not None else settings.default_system_device
+    )
+
     ui_kwargs = dict(
         settings=settings,
         sample_rate=sample_rate,
         channels=channels,
         mix_down=mix_down,
         default_name=name,
-        default_mic=mic_device,
-        default_system=system_device,
+        default_mic=resolved_mic,
+        default_system=resolved_system,
         transcription_backend_name=transcription_backend,
         notes_backend_name=notes_backend,
     )

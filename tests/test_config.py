@@ -30,6 +30,8 @@ def test_list_environment_settings_reflects_defaults():
 
     assert "ADSUM_SAMPLE_RATE" in env_names
     assert "ADSUM_OPENAI_NOTES_MODEL" in env_names
+    assert "ADSUM_DEFAULT_MIC_DEVICE" in env_names
+    assert "ADSUM_DEFAULT_SYSTEM_DEVICE" in env_names
 
 
 def test_update_environment_setting_persists_and_reloads():

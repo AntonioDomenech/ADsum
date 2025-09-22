@@ -23,6 +23,8 @@ class Settings(BaseSettings):
     openai_notes_model: str = "gpt-4o-mini"
     openai_api_key: Optional[str] = None
     session_prefix: str = "session"
+    default_mic_device: Optional[str] = None
+    default_system_device: Optional[str] = None
 
     model_config = SettingsConfigDict(
         env_prefix="ADSUM_",

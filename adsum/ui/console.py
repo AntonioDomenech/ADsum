@@ -66,8 +66,14 @@ class RecordingConsoleUI:
         self.channels = channels if channels is not None else self._settings.channels
         self.mix_down = mix_down
         self._default_name = default_name
-        self._default_mic = default_mic
-        self._default_system = default_system
+        self._default_mic = (
+            default_mic if default_mic is not None else self._settings.default_mic_device
+        )
+        self._default_system = (
+            default_system
+            if default_system is not None
+            else self._settings.default_system_device
+        )
         self._transcription_backend_name = transcription_backend_name or "none"
         self._notes_backend_name = notes_backend_name or "none"
 
@@ -143,6 +149,8 @@ class RecordingConsoleUI:
         system = self._prompt_device("System", self._default_system)
         self._default_mic = mic
         self._default_system = system
+        self._persist_device_setting("default_mic_device", mic, "microphone")
+        self._persist_device_setting("default_system_device", system, "system")
 
         captures: Dict[str, AudioCapture] = {}
         for channel, device in {"microphone": mic, "system": system}.items():
@@ -335,14 +343,41 @@ class RecordingConsoleUI:
         return f"Session {timestamp}"
 
     def _prompt_device(self, label: str, current: Optional[str]) -> Optional[str]:
-        placeholder = current or "skip"
-        value = input(f"{label} device id/name [{placeholder}]: ").strip()
+        placeholder = self._format_device_display(current)
+        prompt = (
+            f"{label} device id/name [{placeholder}] "
+            "(press Enter to keep, type 'skip' to disable): "
+        )
+        value = input(prompt).strip()
         if not value:
             return current
         lowered = value.lower()
-        if lowered in {"skip", "none", "off"}:
+        if lowered in {"skip", "none", "off", "disabled"}:
             return None
         return value
+
+    def _format_device_display(self, value: Optional[str]) -> str:
+        if value:
+            return value
+        return "disabled"
+
+    def _persist_device_setting(
+        self, field: str, value: Optional[str], label: str
+    ) -> None:
+        try:
+            if value is None:
+                updated_settings = clear_environment_setting(field)
+            else:
+                updated_settings = update_environment_setting(field, value)
+        except EnvironmentSettingError as exc:
+            self._error(f"Failed to store default {label} device: {exc}")
+            return
+
+        self._apply_settings(updated_settings)
+        if field == "default_mic_device":
+            self._default_mic = updated_settings.default_mic_device
+        elif field == "default_system_device":
+            self._default_system = updated_settings.default_system_device
 
     def _prompt_bool(self, label: str, current: bool) -> bool:
         suffix = "Y/n" if current else "y/N"
