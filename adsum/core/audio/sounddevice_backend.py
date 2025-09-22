@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import inspect
 import queue
 from typing import Optional
 
@@ -289,21 +290,114 @@ class SoundDeviceCapture(AudioCapture):
 
         settings_factory = getattr(self._sd, "WasapiSettings", None)
         if settings_factory is None:
-            LOGGER.warning(
-                "sounddevice does not expose WasapiSettings; cannot enable loopback for %s",
-                self._device,
+            raise CaptureError(
+                "sounddevice installation does not expose WasapiSettings; "
+                "upgrade to a version with WASAPI loopback support"
             )
-            return
 
         try:
-            self._extra_settings = settings_factory(loopback=True)
+            self._extra_settings = _prepare_wasapi_loopback_settings(self._sd)
+        except CaptureError:
+            raise
         except Exception as exc:  # pragma: no cover - depends on runtime availability
-            LOGGER.warning("Failed to configure WASAPI loopback for %s: %s", self._device, exc)
-            return
+            raise CaptureError(
+                f"Failed to configure WASAPI loopback for {self._device}: {exc}"
+            ) from exc
 
         self._loopback_channels = max_output
         LOGGER.info("Configured WASAPI loopback capture for %s", self._device)
 
 
-__all__ = ["SoundDeviceCapture"]
+def _prepare_wasapi_loopback_settings(sd_module):
+    """Return WASAPI settings configured for loopback capture.
+
+    The helper first tries the high-level ``loopback`` keyword introduced in
+    recent ``sounddevice`` releases and gracefully falls back to manipulating
+    the underlying PortAudio stream info structure when that keyword is
+    unavailable.
+    """
+
+    settings_factory = getattr(sd_module, "WasapiSettings", None)
+    if settings_factory is None:
+        raise CaptureError(
+            "sounddevice installation does not expose WasapiSettings; "
+            "upgrade to a version with WASAPI loopback support"
+        )
+
+    if _wasapi_settings_supports_loopback_keyword(settings_factory):
+        try:
+            return settings_factory(loopback=True)
+        except TypeError:
+            # Older wheels can report the keyword in their signature but still
+            # reject it at runtime. Fall through to the low-level path.
+            LOGGER.debug("WasapiSettings rejected loopback keyword; using fallback")
+        except Exception as exc:  # pragma: no cover - depends on runtime availability
+            raise CaptureError(f"sounddevice failed to enable WASAPI loopback: {exc}") from exc
+
+    if not wasapi_loopback_capable(sd_module):
+        raise CaptureError(
+            "sounddevice installation does not support enabling WASAPI loopback. "
+            "Upgrade to a version that provides WasapiSettings(loopback=...) or exposes "
+            "paWinWasapiLoopback"
+        )
+
+    try:
+        settings = settings_factory()
+    except Exception as exc:  # pragma: no cover - defensive
+        raise CaptureError(
+            f"sounddevice failed to instantiate WasapiSettings for loopback: {exc}"
+        ) from exc
+
+    streaminfo = getattr(settings, "_streaminfo", None)
+    contents = getattr(streaminfo, "contents", None)
+    lib = getattr(sd_module, "_lib", None)
+    loopback_flag = getattr(lib, "paWinWasapiLoopback", None) if lib is not None else None
+    if contents is None or not hasattr(contents, "flags") or loopback_flag is None:
+        raise CaptureError(
+            "sounddevice installation does not expose the PaWasapiStreamInfo handle "
+            "required to enable loopback capture"
+        )
+
+    contents.flags |= loopback_flag
+    return settings
+
+
+def _wasapi_settings_supports_loopback_keyword(settings_factory) -> bool:
+    try:
+        signature = inspect.signature(settings_factory)
+    except (TypeError, ValueError):  # pragma: no cover - builtin or Cython callable
+        return False
+
+    for parameter in signature.parameters.values():
+        if parameter.name == "loopback" and parameter.kind in (
+            inspect.Parameter.POSITIONAL_OR_KEYWORD,
+            inspect.Parameter.KEYWORD_ONLY,
+        ):
+            return True
+    return False
+
+
+def wasapi_loopback_capable(sd_module) -> bool:
+    """Return ``True`` when the sounddevice module can configure loopback."""
+
+    settings_factory = getattr(sd_module, "WasapiSettings", None)
+    if settings_factory is None:
+        return False
+
+    if _wasapi_settings_supports_loopback_keyword(settings_factory):
+        return True
+
+    try:
+        settings = settings_factory()
+    except Exception:  # pragma: no cover - defensive
+        return False
+
+    streaminfo = getattr(settings, "_streaminfo", None)
+    contents = getattr(streaminfo, "contents", None)
+    lib = getattr(sd_module, "_lib", None)
+    loopback_flag = getattr(lib, "paWinWasapiLoopback", None) if lib is not None else None
+    return bool(contents is not None and hasattr(contents, "flags") and loopback_flag is not None)
+
+
+__all__ = ["SoundDeviceCapture", "wasapi_loopback_capable"]
 
