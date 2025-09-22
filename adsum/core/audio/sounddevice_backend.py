@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import queue
 from typing import Optional
 
@@ -35,6 +36,7 @@ class SoundDeviceCapture(AudioCapture):
         self._dtype = dtype
         self._queue: queue.Queue[np.ndarray] = queue.Queue()
         self._stream: Optional[sd.InputStream] = None
+        self._device_info: Optional[dict] = None
 
     def _callback(self, indata, frames, time_info, status) -> None:  # pragma: no cover - executed in runtime
         if status:
@@ -52,44 +54,95 @@ class SoundDeviceCapture(AudioCapture):
 
         last_error: Optional[Exception] = None
 
+        requested_sample_rate = int(self.info.sample_rate)
+
         for channels in self._resolve_channel_candidates():
-            try:
-                stream = self._sd.InputStream(
-                    samplerate=self.info.sample_rate,
-                    channels=channels,
-                    dtype=self._dtype,
-                    blocksize=self._block_size,
-                    device=self._device,
-                    callback=self._callback,
-                )
-            except self._sd.PortAudioError as exc:  # pragma: no cover - depends on runtime device
-                last_error = exc
-                message = str(exc)
-                if "Invalid number of channels" not in message:
+            for sample_rate in self._resolve_sample_rate_candidates():
+                try:
+                    stream = self._sd.InputStream(
+                        samplerate=sample_rate,
+                        channels=channels,
+                        dtype=self._dtype,
+                        blocksize=self._block_size,
+                        device=self._device,
+                        callback=self._callback,
+                    )
+                except self._sd.PortAudioError as exc:  # pragma: no cover - depends on runtime device
+                    last_error = exc
+                    message = str(exc)
+                    if "Invalid number of channels" in message:
+                        LOGGER.warning(
+                            "sounddevice rejected %s channel(s) for %s on %s: %s",
+                            channels,
+                            self.info.name,
+                            self._device,
+                            message,
+                        )
+                        break
+                    if "sample rate" in message.lower():
+                        LOGGER.warning(
+                            "sounddevice rejected %s Hz for %s on %s: %s",
+                            sample_rate,
+                            self.info.name,
+                            self._device,
+                            message,
+                        )
+                        continue
                     raise CaptureError(message) from exc
-                LOGGER.warning(
-                    "sounddevice rejected %s channel(s) for %s on %s: %s",
-                    channels,
+
+                try:
+                    stream.start()
+                except self._sd.PortAudioError as exc:  # pragma: no cover - depends on runtime device
+                    last_error = exc
+                    message = str(exc)
+                    with contextlib.suppress(Exception):
+                        stream.close()
+                    if "Invalid number of channels" in message:
+                        LOGGER.warning(
+                            "sounddevice rejected %s channel(s) for %s on %s when starting stream: %s",
+                            channels,
+                            self.info.name,
+                            self._device,
+                            message,
+                        )
+                        break
+                    if "sample rate" in message.lower() or "host error" in message.lower():
+                        LOGGER.warning(
+                            "sounddevice failed to start %s at %s Hz on %s: %s",
+                            self.info.name,
+                            sample_rate,
+                            self._device,
+                            message,
+                        )
+                        continue
+                    raise CaptureError(message) from exc
+
+                self._stream = stream
+                self.info.channels = channels
+                if sample_rate != requested_sample_rate:
+                    LOGGER.warning(
+                        "Adjusted sample rate for %s on %s from %s Hz to %s Hz",
+                        self.info.name,
+                        self._device,
+                        requested_sample_rate,
+                        sample_rate,
+                    )
+                self.info.sample_rate = sample_rate
+                LOGGER.info(
+                    "Configured %s with %s channel(s) at %s Hz",
                     self.info.name,
-                    self._device,
-                    message,
+                    channels,
+                    self.info.sample_rate,
                 )
-                continue
+                return
 
-            self._stream = stream
-            self.info.channels = channels
-            LOGGER.info(
-                "Configured %s with %s channel(s) at %s Hz",
-                self.info.name,
-                channels,
-                self.info.sample_rate,
-            )
-            self._stream.start()
-            return
-
-        raise CaptureError(
-            f"Failed to open audio stream for {self.info.name} on {self._device}: Invalid number of channels"
-        ) from last_error
+        error_message = (
+            f"Failed to open audio stream for {self.info.name} on {self._device}: "
+            "No compatible channel/sample rate combination"
+        )
+        if last_error is not None:
+            error_message = f"{error_message} ({last_error})"
+        raise CaptureError(error_message) from last_error
 
     def stop(self) -> None:
         if self._stream is not None:
@@ -124,11 +177,7 @@ class SoundDeviceCapture(AudioCapture):
         if requested > 0:
             candidates.append(requested)
 
-        device_info: Optional[dict] = None
-        try:  # pragma: no cover - depends on runtime availability
-            device_info = self._sd.query_devices(self._device, "input")
-        except Exception as exc:  # pragma: no cover - depends on runtime availability
-            LOGGER.debug("Failed to query device info for %s: %s", self._device, exc)
+        device_info = self._query_device_info()
 
         max_channels: Optional[int] = None
         if device_info:
@@ -157,6 +206,50 @@ class SoundDeviceCapture(AudioCapture):
             candidates.append(1)
 
         return [channel for channel in candidates if channel > 0]
+
+    def _resolve_sample_rate_candidates(self) -> list[int]:
+        """Return an ordered list of sample rates to try for the device."""
+
+        requested = int(self.info.sample_rate) if self.info.sample_rate else 0
+        candidates: list[int] = []
+
+        if requested > 0:
+            candidates.append(requested)
+
+        device_info = self._query_device_info()
+        default_rate: Optional[int] = None
+        if device_info:
+            raw = device_info.get("default_samplerate")
+            try:
+                if raw is not None:
+                    default_rate = int(float(raw))
+            except (TypeError, ValueError):  # pragma: no cover - defensive
+                LOGGER.debug(
+                    "Failed to parse default sample rate for %s: %s",
+                    self._device,
+                    raw,
+                )
+        if default_rate and default_rate not in candidates:
+            candidates.append(default_rate)
+
+        for rate in (48_000, 44_100, 32_000, 24_000, 22_050, 16_000, 12_000, 11_025, 8_000):
+            if rate not in candidates:
+                candidates.append(rate)
+
+        return [rate for rate in candidates if rate > 0]
+
+    def _query_device_info(self) -> Optional[dict]:
+        """Return cached device information, querying the backend if necessary."""
+
+        if self._device_info is not None:
+            return self._device_info
+
+        try:  # pragma: no cover - depends on runtime availability
+            self._device_info = self._sd.query_devices(self._device, "input")
+        except Exception as exc:  # pragma: no cover - depends on runtime availability
+            LOGGER.debug("Failed to query device info for %s: %s", self._device, exc)
+            self._device_info = None
+        return self._device_info
 
 
 __all__ = ["SoundDeviceCapture"]
