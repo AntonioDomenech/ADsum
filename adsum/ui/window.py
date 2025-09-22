@@ -89,8 +89,14 @@ class RecordingWindowUI:
         self.channels = channels if channels is not None else self._settings.channels
         self.mix_down = mix_down
         self._default_name = default_name
-        self._default_mic = default_mic
-        self._default_system = default_system
+        self._default_mic = (
+            default_mic if default_mic is not None else self._settings.default_mic_device
+        )
+        self._default_system = (
+            default_system
+            if default_system is not None
+            else self._settings.default_system_device
+        )
         self._transcription_backend_name = (transcription_backend_name or "none").lower()
         self._notes_backend_name = (notes_backend_name or "none").lower()
 
@@ -311,6 +317,8 @@ class RecordingWindowUI:
             system = self._prompt_device("System", self._default_system)
             self._default_mic = mic
             self._default_system = system
+            self._persist_device_setting("default_mic_device", mic, "microphone")
+            self._persist_device_setting("default_system_device", system, "system")
 
             captures: Dict[str, AudioCapture] = {}
             for channel, device in {"microphone": mic, "system": system}.items():
@@ -565,11 +573,16 @@ class RecordingWindowUI:
 
     def _prompt_device(self, label: str, current: Optional[str]) -> Optional[str]:
         assert simpledialog is not None
-        placeholder = current or "skip"
+        current_value = current or ""
+        current_display = self._format_device_display(current)
         value = simpledialog.askstring(
             f"{label} device",
-            f"Enter the {label.lower()} device id/name (type 'skip' to disable):",
-            initialvalue=placeholder,
+            (
+                f"Enter the {label.lower()} device id/name.\n"
+                f"Current selection: {current_display}.\n"
+                "Leave empty to keep the current value or type 'skip' to disable."
+            ),
+            initialvalue=current_value,
             parent=self._root,
         )
         if value is None:
@@ -577,7 +590,7 @@ class RecordingWindowUI:
         value = value.strip()
         if not value:
             return current
-        if value.lower() in {"skip", "none", "off"}:
+        if value.lower() in {"skip", "none", "off", "disabled"}:
             return None
         return value
 
@@ -608,6 +621,29 @@ class RecordingWindowUI:
             raise _UserCancelled
         value = value.strip()
         return value or current
+
+    def _format_device_display(self, value: Optional[str]) -> str:
+        if value:
+            return value
+        return "disabled"
+
+    def _persist_device_setting(
+        self, field: str, value: Optional[str], label: str
+    ) -> None:
+        try:
+            if value is None:
+                updated_settings = clear_environment_setting(field)
+            else:
+                updated_settings = update_environment_setting(field, value)
+        except EnvironmentSettingError as exc:
+            self._error(f"Failed to store default {label} device: {exc}")
+            return
+
+        self._apply_settings(updated_settings)
+        if field == "default_mic_device":
+            self._default_mic = updated_settings.default_mic_device
+        elif field == "default_system_device":
+            self._default_system = updated_settings.default_system_device
 
     def _show_text_window(self, title: str, content: str) -> None:
         if not self._root:

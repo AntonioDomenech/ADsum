@@ -61,6 +61,8 @@ Environment variables customise behaviour via `pydantic` settings (prefix `ADSUM
 - `ADSUM_SAMPLE_RATE`: Sample rate used for capture (default `16000`).
 - `ADSUM_CHANNELS`: Number of channels per capture stream (default `1`).
 - `ADSUM_CHUNK_SECONDS`: Preferred chunk duration when streaming (default `1.0`).
+- `ADSUM_DEFAULT_MIC_DEVICE`: Preferred microphone device identifier remembered between sessions.
+- `ADSUM_DEFAULT_SYSTEM_DEVICE`: Preferred system audio device identifier remembered between sessions.
 - `ADSUM_OPENAI_TRANSCRIPTION_MODEL`: Model used for OpenAI transcription.
 - `ADSUM_OPENAI_NOTES_MODEL`: Model used for OpenAI notes/summarisation.
 - `ADSUM_OPENAI_API_KEY`: Optional API key forwarded to the OpenAI client (falls back to `OPENAI_API_KEY`).

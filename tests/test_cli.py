@@ -19,8 +19,8 @@ def _build_kwargs() -> dict:
         "channels": None,
         "mix_down": True,
         "default_name": None,
-        "default_mic": None,
-        "default_system": None,
+        "default_mic": settings.default_mic_device,
+        "default_system": settings.default_system_device,
         "transcription_backend_name": "dummy",
         "notes_backend_name": "dummy",
     }
@@ -79,4 +79,50 @@ def test_resolve_ui_window_falls_back(monkeypatch) -> None:
 
     ui = cli._resolve_ui("window", kwargs)
     assert isinstance(ui, cli.RecordingConsoleUI)
+
+
+def test_launch_ui_uses_settings_defaults(monkeypatch) -> None:
+    captured: dict = {}
+
+    def fake_configure_logging() -> None:
+        captured["logging"] = True
+
+    class _DummyUI:
+        def __init__(self, **kwargs):
+            captured["kwargs"] = kwargs
+
+        def run(self) -> None:
+            captured["ran"] = True
+
+    def fake_resolve(interface: str, kwargs: dict):
+        captured["interface"] = interface
+        return _DummyUI(**kwargs)
+
+    base_settings = get_settings()
+    custom_settings = base_settings.model_copy(
+        update={"default_mic_device": "MicX", "default_system_device": "SysY"}
+    )
+
+    monkeypatch.setattr(cli, "configure_logging", fake_configure_logging)
+    monkeypatch.setattr(cli, "_resolve_ui", fake_resolve)
+    monkeypatch.setattr(cli, "get_settings", lambda: custom_settings)
+
+    cli._launch_ui(
+        name=None,
+        mic_device=None,
+        system_device=None,
+        mix_down=True,
+        transcription_backend="dummy",
+        notes_backend="dummy",
+        sample_rate=None,
+        channels=None,
+        interface="console",
+    )
+
+    kwargs = captured["kwargs"]
+    assert captured["interface"] == "console"
+    assert kwargs["settings"] is custom_settings
+    assert kwargs["default_mic"] == "MicX"
+    assert kwargs["default_system"] == "SysY"
+    assert captured.get("ran") is True
 
