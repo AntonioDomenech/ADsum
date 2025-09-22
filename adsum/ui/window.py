@@ -1,6 +1,8 @@
 """Graphical window UI for managing ADsum recordings."""
 
 from __future__ import annotations
+
+import contextlib
 import queue
 import threading
 import time
@@ -140,6 +142,7 @@ class RecordingWindowUI:
         self._add_button(button_frame, "Start", self._start_recording)
         self._add_button(button_frame, "Pause", self._pause_recording)
         self._add_button(button_frame, "Resume", self._resume_recording)
+        self._add_button(button_frame, "Test", self._test_devices)
         self._add_button(button_frame, "Stop", self._stop_recording)
         self._add_button(button_frame, "Notes", self._show_notes)
         self._add_button(button_frame, "Sessions", self._list_sessions)
@@ -427,6 +430,36 @@ class RecordingWindowUI:
         active.control.request_stop()
         self._info("Stopping recording...")
 
+    def _test_devices(self) -> None:
+        if not self._root:
+            return
+
+        self._show_text_window("Available audio devices", format_device_table())
+
+        last_value = self._default_mic or self._default_system or ""
+        tested_any = False
+
+        while True:
+            try:
+                selection = self._prompt_test_device(last_value)
+            except _UserCancelled:
+                if tested_any:
+                    self._info("Device testing cancelled.")
+                else:
+                    self._info("Device testing dismissed.")
+                return
+
+            if selection is None:
+                if tested_any:
+                    self._info("Finished testing audio devices.")
+                else:
+                    self._info("No device selected for testing.")
+                return
+
+            tested_any = True
+            last_value = selection
+            self._perform_device_test(selection)
+
     def _show_notes(self) -> None:
         if self._last_outcome and self._last_outcome.notes:
             notes = self._last_outcome.notes
@@ -571,6 +604,25 @@ class RecordingWindowUI:
         name = name.strip()
         return name or default
 
+    def _prompt_test_device(self, current: Optional[str]) -> Optional[str]:
+        assert simpledialog is not None
+        prompt = (
+            "Enter the device id or name to test.\n"
+            "Leave empty to finish testing."
+        )
+        value = simpledialog.askstring(
+            "Test audio device",
+            prompt,
+            initialvalue=current or "",
+            parent=self._root,
+        )
+        if value is None:
+            raise _UserCancelled
+        value = value.strip()
+        if not value:
+            return None
+        return value
+
     def _prompt_device(self, label: str, current: Optional[str]) -> Optional[str]:
         assert simpledialog is not None
         current_value = current or ""
@@ -644,6 +696,71 @@ class RecordingWindowUI:
             self._default_mic = updated_settings.default_mic_device
         elif field == "default_system_device":
             self._default_system = updated_settings.default_system_device
+
+    def _perform_device_test(self, device: str) -> None:
+        request = CaptureRequest(
+            channel="test",
+            device=device,
+            sample_rate=self.sample_rate,
+            channels=self.channels,
+        )
+
+        try:
+            capture = create_capture(request)
+        except CaptureConfigurationError as exc:
+            self._error(f"Failed to configure device {device}: {exc}")
+            return
+
+        if capture is None:
+            self._error(
+                f"No capture backend available for device {device}. "
+                "Enter a numeric id or device name."
+            )
+            return
+
+        try:
+            capture.start()
+        except Exception as exc:  # pragma: no cover - depends on runtime backend
+            LOGGER.exception("Failed to start capture for device %s: %s", device, exc)
+            self._error(f"Failed to start capture for {device}: {exc}")
+            with contextlib.suppress(Exception):
+                capture.close()
+            return
+
+        try:
+            chunk = None
+            deadline = time.time() + 3.0
+            while time.time() < deadline:
+                chunk = capture.read(timeout=0.3)
+                if chunk is not None and getattr(chunk, "size", 0) > 0:
+                    break
+
+            if chunk is None or getattr(chunk, "size", 0) == 0:
+                self._error(
+                    f"No audio data received from {device}. "
+                    "Check the device and ensure it is not muted or busy."
+                )
+                return
+
+            shape = getattr(chunk, "shape", None)
+            message = (
+                f"Successfully captured audio from {device} "
+                f"({capture.info.sample_rate} Hz, {capture.info.channels} channel(s))."
+            )
+            if shape:
+                message += f" Sample shape: {shape}."
+            self._info(message)
+            if messagebox is not None and self._root is not None:
+                messagebox.showinfo("Device test", message, parent=self._root)
+
+        except Exception as exc:  # pragma: no cover - depends on runtime backend
+            LOGGER.exception("Error while testing device %s: %s", device, exc)
+            self._error(f"Error while testing {device}: {exc}")
+        finally:
+            with contextlib.suppress(Exception):
+                capture.stop()
+            with contextlib.suppress(Exception):
+                capture.close()
 
     def _show_text_window(self, title: str, content: str) -> None:
         if not self._root:
