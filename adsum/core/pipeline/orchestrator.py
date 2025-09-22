@@ -116,11 +116,11 @@ class RecordingOrchestrator:
 
         try:
             for channel, capture in request.captures.items():
-                info = capture.info
                 file_path = dirs["raw"] / f"{channel}.wav"
+                capture.start()
+                info = capture.info
                 writers[channel] = AudioFileWriter(file_path, info.sample_rate, info.channels)
                 capture_paths[channel] = file_path
-                capture.start()
 
             while True:
                 if control and control.should_stop:
@@ -152,11 +152,14 @@ class RecordingOrchestrator:
                 with contextlib.suppress(Exception):
                     capture.stop()
                 # Drain remaining chunks without blocking to ensure audio is flushed
+                writer = writers.get(channel)
+                if writer is None:
+                    continue
                 while True:
                     chunk = capture.read(timeout=0)
                     if chunk is None:
                         break
-                    writers[channel].write(np.asarray(chunk, dtype=np.float32))
+                    writer.write(np.asarray(chunk, dtype=np.float32))
                 with contextlib.suppress(Exception):
                     capture.close()
             for writer in writers.values():
