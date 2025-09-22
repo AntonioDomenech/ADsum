@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "adsum"
+version = "0.1.0"
+description = "Cross-platform meeting recorder with dual-channel capture and transcription pipeline."
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [{name = "ADsum"}]
+license = {text = "Apache-2.0"}
+dependencies = [
+    "numpy>=1.24",
+    "typer>=0.9",
+    "pydantic>=2.6",
+    "pydantic-settings>=2.6",
+    "openai>=1.12",
+]
+
+[project.optional-dependencies]
+audio = ["sounddevice>=0.4"]
+
+[project.scripts]
+adsum = "adsum.cli:app"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["adsum*"]
+
+[tool.pytest.ini_options]
+minversion = "7.0"
+addopts = "-ra"
+testpaths = ["tests"]
+
