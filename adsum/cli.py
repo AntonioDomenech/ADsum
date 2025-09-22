@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from typing import Optional
+import sys
+from typing import Any, Dict, Optional
 
 import typer
 
@@ -24,10 +25,11 @@ def _launch_ui(
     notes_backend: str,
     sample_rate: Optional[int],
     channels: Optional[int],
+    interface: str,
 ) -> None:
     configure_logging()
     settings = get_settings()
-    ui = RecordingConsoleUI(
+    ui_kwargs = dict(
         settings=settings,
         sample_rate=sample_rate,
         channels=channels,
@@ -38,7 +40,39 @@ def _launch_ui(
         transcription_backend_name=transcription_backend,
         notes_backend_name=notes_backend,
     )
-    ui.run()
+
+    ui_instance = _resolve_ui(interface, ui_kwargs)
+    ui_instance.run()
+
+
+def _resolve_ui(interface: str, ui_kwargs: Dict[str, Any]):
+    """Return the UI implementation based on the requested interface."""
+
+    normalized = (interface or "auto").lower()
+
+    if normalized not in {"auto", "console", "window"}:
+        raise typer.BadParameter("Interface must be one of: auto, console, window")
+
+    if normalized == "auto":
+        normalized = "window" if sys.platform.startswith("win") else "console"
+
+    if normalized == "window":
+        try:
+            from .ui import RecordingWindowUI
+
+            if RecordingWindowUI.is_supported():
+                return RecordingWindowUI(**ui_kwargs)
+            typer.echo(
+                "Window UI is not available on this system. Falling back to console interface.",
+                err=True,
+            )
+        except Exception as exc:  # pragma: no cover - runtime fallback
+            typer.echo(
+                f"Failed to initialise the window UI ({exc}). Falling back to console.",
+                err=True,
+            )
+
+    return RecordingConsoleUI(**ui_kwargs)
 
 
 @app.command()
@@ -63,6 +97,12 @@ def ui(
     ),
     sample_rate: Optional[int] = typer.Option(None, help="Override sample rate"),
     channels: Optional[int] = typer.Option(None, help="Override number of channels"),
+    interface: str = typer.Option(
+        "auto",
+        "--interface",
+        "-i",
+        help="User interface to launch: auto (default), console, or window.",
+    ),
 ) -> None:
     """Launch the interactive UI without starting a recording directly."""
 
@@ -75,6 +115,7 @@ def ui(
         notes_backend=notes_backend,
         sample_rate=sample_rate,
         channels=channels,
+        interface=interface,
     )
 
 
@@ -92,6 +133,12 @@ def record(
     ),
     sample_rate: Optional[int] = typer.Option(None, help="Override sample rate"),
     channels: Optional[int] = typer.Option(None, help="Override number of channels"),
+    interface: str = typer.Option(
+        "auto",
+        "--interface",
+        "-i",
+        help="User interface to launch: auto (default), console, or window.",
+    ),
 ) -> None:
     """Backward-compatible alias that now launches the interactive UI."""
 
@@ -105,6 +152,7 @@ def record(
         notes_backend=notes_backend,
         sample_rate=sample_rate,
         channels=channels,
+        interface=interface,
     )
 
 
