@@ -1,11 +1,12 @@
 """Graphical window UI for managing ADsum recordings."""
 
 from __future__ import annotations
+import queue
 import threading
 import time
 from collections import deque
 from dataclasses import dataclass
-from typing import Any, Deque, Dict, Optional
+from typing import Any, Deque, Dict, Optional, Set
 
 try:  # pragma: no cover - import guard for optional tkinter dependency
     import tkinter as tk
@@ -26,6 +27,7 @@ from ..config import (
     list_environment_settings,
     update_environment_setting,
 )
+from ..data.models import TranscriptResult
 from ..core.audio.base import AudioCapture
 from ..core.audio.devices import format_device_table
 from ..core.audio.factory import CaptureConfigurationError, CaptureRequest, create_capture
@@ -94,6 +96,9 @@ class RecordingWindowUI:
 
         self._orchestrator = RecordingOrchestrator()
         self._messages: Deque[str] = deque()
+        self._transcript_queue: "queue.Queue[TranscriptResult]" = queue.Queue()
+        self._transcript_results: Dict[str, TranscriptResult] = {}
+        self._transcription_status: str = "Transcription results will appear here."
         self._active: Optional[_ActiveRecording] = None
         self._pending_outcome: Optional[RecordingOutcome] = None
         self._pending_error: Optional[Exception] = None
@@ -103,6 +108,7 @@ class RecordingWindowUI:
         self._root: Optional[tk.Tk] = None
         self._status_var: Optional[tk.StringVar] = None
         self._log_widget: Optional[ScrolledText] = None
+        self._transcript_widget: Optional[ScrolledText] = None
         self._refresh_job: Optional[str] = None
 
     # ------------------------------------------------------------------
@@ -135,6 +141,12 @@ class RecordingWindowUI:
         self._add_button(button_frame, "Environment", self._configure_environment)
         self._add_button(button_frame, "Quit", self._on_close)
 
+        transcript_label = ttk.Label(self._root, text="Live transcription:")
+        transcript_label.pack(anchor="w", padx=12, pady=(12, 0))
+
+        self._transcript_widget = ScrolledText(self._root, height=8, width=80, state="disabled")
+        self._transcript_widget.pack(fill="both", expand=False, padx=12, pady=(0, 12))
+
         log_label = ttk.Label(self._root, text="Activity log:")
         log_label.pack(anchor="w", padx=12, pady=(12, 0))
 
@@ -143,6 +155,7 @@ class RecordingWindowUI:
 
         self._info("Launching ADsum window UI. Close the window to exit.")
         self._flush_messages()
+        self._render_transcription_text()
         self._schedule_refresh()
 
         self._root.mainloop()
@@ -170,6 +183,7 @@ class RecordingWindowUI:
             return
 
         self._refresh_state()
+        self._flush_transcription_updates()
         self._update_status()
         self._flush_messages()
 
@@ -202,6 +216,81 @@ class RecordingWindowUI:
         self._log_widget.insert("end", message + "\n")
         self._log_widget.configure(state="disabled")
         self._log_widget.see("end")
+
+    # ------------------------------------------------------------------
+    # Transcription visualisation
+    # ------------------------------------------------------------------
+    def _render_transcription_text(self) -> None:
+        if not self._transcript_widget:
+            return
+
+        self._transcript_widget.configure(state="normal")
+        self._transcript_widget.delete("1.0", "end")
+
+        if not self._transcript_results:
+            placeholder = self._transcription_status or "Transcription results will appear here."
+            self._transcript_widget.insert("1.0", placeholder)
+        else:
+            lines = []
+            for channel in sorted(self._transcript_results):
+                result = self._transcript_results[channel]
+                lines.append(f"[{channel}]")
+                if result.segments:
+                    for segment in result.segments:
+                        start = getattr(segment, "start", None)
+                        end = getattr(segment, "end", None)
+                        if start is not None and end is not None:
+                            lines.append(f"  {start:6.2f}-{end:6.2f}s  {segment.text}")
+                        else:
+                            lines.append(f"  {segment.text}")
+                text = result.text.strip()
+                if text:
+                    if result.segments:
+                        lines.append("  Full text:")
+                        lines.append(f"    {text}")
+                    else:
+                        lines.append(f"  {text}")
+                lines.append("")
+            content = "\n".join(lines).rstrip()
+            self._transcript_widget.insert("1.0", content)
+
+        self._transcript_widget.configure(state="disabled")
+        self._transcript_widget.see("end")
+
+    def _update_transcription_status(self, message: str) -> None:
+        self._transcription_status = message
+        if not self._transcript_results:
+            self._render_transcription_text()
+
+    def _reset_transcription_view(self, status: Optional[str] = None) -> None:
+        self._transcript_results.clear()
+        self._clear_transcript_queue()
+        self._transcription_status = status or "Transcription results will appear here."
+        self._render_transcription_text()
+
+    def _clear_transcript_queue(self) -> None:
+        while True:
+            try:
+                self._transcript_queue.get_nowait()
+            except queue.Empty:
+                break
+
+    def _flush_transcription_updates(self) -> None:
+        updated_channels: Set[str] = set()
+        while True:
+            try:
+                result = self._transcript_queue.get_nowait()
+            except queue.Empty:
+                break
+            self._transcript_results[result.channel] = result
+            updated_channels.add(result.channel)
+
+        if updated_channels:
+            self._transcription_status = ""
+            self._render_transcription_text()
+
+    def _on_transcript_result(self, result: TranscriptResult) -> None:
+        self._transcript_queue.put(result)
 
     # ------------------------------------------------------------------
     # Menu handlers
@@ -270,6 +359,11 @@ class RecordingWindowUI:
 
             self._transcription_backend_name = transcription_name
             self._notes_backend_name = notes_name
+
+            if transcription is None:
+                self._reset_transcription_view("Transcription disabled for this session.")
+            else:
+                self._reset_transcription_view("Recording... awaiting transcription results.")
 
             request = RecordingRequest(name=name, captures=captures, mix_down=mix_down)
             control = RecordingControl()
@@ -572,6 +666,7 @@ class RecordingWindowUI:
                 transcription=transcription,
                 notes=notes,
                 control=control,
+                transcript_callback=self._on_transcript_result,
             )
             self._pending_outcome = outcome
         except Exception as exc:  # pragma: no cover - runtime behaviour
@@ -584,6 +679,10 @@ class RecordingWindowUI:
             self._active = None
             if self._pending_error:
                 self._error(f"Recording failed: {self._pending_error}")
+                if not self._transcript_results:
+                    self._update_transcription_status(
+                        "Recording failed before transcription could complete."
+                    )
             elif self._pending_outcome:
                 self._last_outcome = self._pending_outcome
                 summary = f"Session saved at {self._pending_outcome.session.id}"
@@ -594,6 +693,17 @@ class RecordingWindowUI:
                         for ch, result in self._pending_outcome.transcripts.items()
                     )
                     self._info(f"Transcripts generated ({counts}).")
+                    for result in self._pending_outcome.transcripts.values():
+                        self._transcript_results[result.channel] = result
+                    self._transcription_status = ""
+                    self._render_transcription_text()
+                elif not self._transcript_results and (
+                    "awaiting transcription" in self._transcription_status.lower()
+                    or "will appear here" in self._transcription_status.lower()
+                ):
+                    self._update_transcription_status(
+                        "No transcription available for this session."
+                    )
                 if self._pending_outcome.notes:
                     self._info("Notes summary available via the Notes button.")
             self._pending_error = None
