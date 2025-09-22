@@ -37,6 +37,8 @@ class SoundDeviceCapture(AudioCapture):
         self._queue: queue.Queue[np.ndarray] = queue.Queue()
         self._stream: Optional[sd.InputStream] = None
         self._device_info: Optional[dict] = None
+        self._extra_settings = None
+        self._loopback_channels: Optional[int] = None
 
     def _callback(self, indata, frames, time_info, status) -> None:  # pragma: no cover - executed in runtime
         if status:
@@ -58,15 +60,19 @@ class SoundDeviceCapture(AudioCapture):
 
         for channels in self._resolve_channel_candidates():
             for sample_rate in self._resolve_sample_rate_candidates():
+                stream_kwargs = dict(
+                    samplerate=sample_rate,
+                    channels=channels,
+                    dtype=self._dtype,
+                    blocksize=self._block_size,
+                    device=self._device,
+                    callback=self._callback,
+                )
+                if self._extra_settings is not None:
+                    stream_kwargs["extra_settings"] = self._extra_settings
+
                 try:
-                    stream = self._sd.InputStream(
-                        samplerate=sample_rate,
-                        channels=channels,
-                        dtype=self._dtype,
-                        blocksize=self._block_size,
-                        device=self._device,
-                        callback=self._callback,
-                    )
+                    stream = self._sd.InputStream(**stream_kwargs)
                 except self._sd.PortAudioError as exc:  # pragma: no cover - depends on runtime device
                     last_error = exc
                     message = str(exc)
@@ -182,6 +188,8 @@ class SoundDeviceCapture(AudioCapture):
         max_channels: Optional[int] = None
         if device_info:
             max_channels = int(device_info.get("max_input_channels") or 0)
+            if max_channels <= 0 and self._loopback_channels:
+                max_channels = self._loopback_channels
             if max_channels <= 0:
                 raise CaptureError(f"Device {self._device} does not support input channels")
             if requested > max_channels:
@@ -245,11 +253,56 @@ class SoundDeviceCapture(AudioCapture):
             return self._device_info
 
         try:  # pragma: no cover - depends on runtime availability
-            self._device_info = self._sd.query_devices(self._device, "input")
+            info = self._sd.query_devices(self._device)
         except Exception as exc:  # pragma: no cover - depends on runtime availability
             LOGGER.debug("Failed to query device info for %s: %s", self._device, exc)
             self._device_info = None
+            return None
+
+        self._device_info = info
+        self._configure_loopback(info)
         return self._device_info
+
+    def _configure_loopback(self, info: dict) -> None:
+        if self._loopback_channels:
+            return
+
+        max_input = int(info.get("max_input_channels") or 0)
+        if max_input > 0:
+            return
+
+        hostapi_index = info.get("hostapi")
+        hostapi_name = ""
+        try:  # pragma: no cover - depends on runtime availability
+            if hostapi_index is not None:
+                hostapi = self._sd.query_hostapis(int(hostapi_index))
+                hostapi_name = str(hostapi.get("name", ""))
+        except Exception as exc:  # pragma: no cover - defensive
+            LOGGER.debug("Failed to query hostapi info for %s: %s", self._device, exc)
+
+        if "wasapi" not in hostapi_name.lower():
+            return
+
+        max_output = int(info.get("max_output_channels") or 0)
+        if max_output <= 0:
+            return
+
+        settings_factory = getattr(self._sd, "WasapiSettings", None)
+        if settings_factory is None:
+            LOGGER.warning(
+                "sounddevice does not expose WasapiSettings; cannot enable loopback for %s",
+                self._device,
+            )
+            return
+
+        try:
+            self._extra_settings = settings_factory(loopback=True)
+        except Exception as exc:  # pragma: no cover - depends on runtime availability
+            LOGGER.warning("Failed to configure WASAPI loopback for %s: %s", self._device, exc)
+            return
+
+        self._loopback_channels = max_output
+        LOGGER.info("Configured WASAPI loopback capture for %s", self._device)
 
 
 __all__ = ["SoundDeviceCapture"]

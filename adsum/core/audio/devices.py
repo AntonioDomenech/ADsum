@@ -31,16 +31,26 @@ def list_input_devices() -> List[DeviceInfo]:
     devices = sd.query_devices()
     results: List[DeviceInfo] = []
     for idx, info in enumerate(devices):
-        if info["max_input_channels"] <= 0:
-            continue
         hostapi = hostapis[info["hostapi"]]["name"] if hostapis else "unknown"
         name = info["name"]
+        max_input = int(info.get("max_input_channels") or 0)
+        max_output = int(info.get("max_output_channels") or 0)
         is_loopback = "loopback" in name.lower() or "monitor" in name.lower()
+
+        if max_input <= 0:
+            if "wasapi" in hostapi.lower() and max_output > 0:
+                # Windows WASAPI output devices support loopback capture when
+                # explicitly requested. Surface them so users can select the
+                # system playback stream.
+                max_input = max_output
+                is_loopback = True
+            else:
+                continue
         results.append(
             DeviceInfo(
                 id=idx,
                 name=name,
-                max_input_channels=info["max_input_channels"],
+                max_input_channels=max_input,
                 default_samplerate=info.get("default_samplerate", 0.0),
                 hostapi=hostapi,
                 is_loopback=is_loopback,
