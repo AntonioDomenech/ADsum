@@ -94,6 +94,30 @@ def test_orchestrator_record_pipeline(tmp_path: Path) -> None:
     assert any(session.id == outcome.session.id for session in sessions)
 
 
+def test_orchestrator_emits_transcript_updates(tmp_path: Path) -> None:
+    db_path = tmp_path / "adsum.db"
+    store = SessionStore(db_path)
+    orchestrator = RecordingOrchestrator(base_dir=tmp_path / "recordings", store=store)
+
+    sample_rate = 16000
+    chunk = np.zeros((sample_rate // 10, 1), dtype=np.float32)
+    capture_info = CaptureInfo(name="microphone", sample_rate=sample_rate, channels=1)
+    capture = FakeCapture(capture_info, [chunk])
+
+    received = []
+    request = RecordingRequest(name="Callback Session", captures={"microphone": capture})
+    orchestrator.record(
+        request,
+        duration=0.02,
+        transcription=DummyTranscriptionService(channel_name="microphone"),
+        transcript_callback=received.append,
+    )
+
+    assert received, "transcript callback should be invoked"
+    assert received[0].channel == "microphone"
+    assert "Dummy transcript" in received[0].text
+
+
 def test_orchestrator_respects_recording_control(tmp_path: Path) -> None:
     db_path = tmp_path / "adsum.db"
     store = SessionStore(db_path)

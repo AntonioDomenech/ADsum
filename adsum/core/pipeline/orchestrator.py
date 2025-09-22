@@ -8,7 +8,7 @@ from threading import Event
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, Iterable, Optional
+from typing import Callable, Dict, Iterable, Optional
 
 import numpy as np
 
@@ -100,6 +100,7 @@ class RecordingOrchestrator:
         transcription: Optional[TranscriptionService] = None,
         notes: Optional[NotesService] = None,
         control: Optional[RecordingControl] = None,
+        transcript_callback: Optional[Callable[[TranscriptResult], None]] = None,
     ) -> RecordingOutcome:
         if not request.captures:
             raise ValueError("At least one capture channel must be configured")
@@ -193,6 +194,11 @@ class RecordingOrchestrator:
                 result = transcription.transcribe(session, path)
                 transcripts[result.channel] = result
                 self.store.save_transcript(result)
+                if transcript_callback is not None:
+                    try:
+                        transcript_callback(result)
+                    except Exception:  # pragma: no cover - callbacks should not break pipeline
+                        LOGGER.exception("Transcript callback raised an exception")
 
         note_document: Optional[NoteDocument] = None
         if notes is not None and transcripts:
