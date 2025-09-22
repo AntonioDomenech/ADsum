@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from ...config import get_settings
 from ...data.models import RecordingSession, TranscriptResult, TranscriptSegment
@@ -28,6 +28,7 @@ class OpenAITranscriptionService(TranscriptionService):
 
         try:
             self.client = OpenAI(**client_kwargs)
+            self._openai_error_cls = OpenAIError
         except OpenAIError as exc:
             message = str(exc)
             if "api_key" in message.lower():
@@ -39,23 +40,35 @@ class OpenAITranscriptionService(TranscriptionService):
 
     def transcribe(self, session: RecordingSession, audio_path: Path) -> TranscriptResult:
         LOGGER.info("Requesting OpenAI transcription for %s", audio_path)
-        with open(audio_path, "rb") as audio_file:
-            response = self.client.audio.transcriptions.create(
-                model=self.model,
-                file=audio_file,
-                response_format="verbose_json",
-            )
-        segments = [
-            TranscriptSegment(start=segment["start"], end=segment["end"], text=segment["text"])
-            for segment in response.get("segments", [])
-        ]
-        text = response.get("text", "")
+        response: Any = None
+        formats = self._candidate_response_formats()
+        for index, response_format in enumerate(formats):
+            try:
+                with open(audio_path, "rb") as audio_file:
+                    response = self.client.audio.transcriptions.create(
+                        model=self.model,
+                        file=audio_file,
+                        response_format=response_format,
+                    )
+                break
+            except self._openai_error_cls as exc:
+                if self._is_response_format_error(exc) and index < len(formats) - 1:
+                    LOGGER.info(
+                        "Response format '%s' is not supported by model '%s'; retrying with '%s'",
+                        response_format,
+                        self.model,
+                        formats[index + 1],
+                    )
+                    continue
+                raise
+
+        text, segments, raw_response = self._parse_transcription_response(response)
         return TranscriptResult(
             session_id=session.id,
             channel=audio_path.stem,
             text=text,
             segments=segments,
-            raw_response=response,
+            raw_response=raw_response,
         )
 
     def transcribe_stream(
@@ -100,48 +113,77 @@ class OpenAITranscriptionService(TranscriptionService):
 
         LOGGER.info("Requesting OpenAI streaming transcription for %s", audio_path)
         parsed: object | None = None
-        try:
-            with open(audio_path, "rb") as audio_file:
-                with streaming.create(
-                    model=self.model,
-                    file=audio_file,
-                    response_format="verbose_json",
-                    stream=True,
-                ) as response:
-                    for line in response.iter_lines():
-                        if not line or line.startswith(":"):
-                            continue
-                        if line.strip().upper() == "DATA: [DONE]":
-                            break
-                        if not line.startswith("data:"):
-                            continue
-                        payload = line[len("data:") :].strip()
-                        if not payload or payload == "[DONE]":
-                            continue
-                        try:
-                            data: Dict[str, object] = json.loads(payload)
-                        except json.JSONDecodeError:
-                            LOGGER.debug("Failed to decode streaming payload: %s", payload)
-                            continue
-                        event_type = str(data.get("type", ""))
-                        if event_type == "transcript.text.delta":
-                            delta = str(data.get("delta", ""))
-                            if delta:
-                                text_parts.append(delta)
-                                incremental_segments.append(delta)
-                                emit_partial()
-                        elif event_type == "transcript.text.done":
-                            text = str(data.get("text", ""))
-                            if text:
-                                text_parts.append(text)
-                                incremental_segments.append(text)
-                                emit_partial()
-                        elif event_type == "response.completed":
-                            break
+        formats = self._candidate_response_formats()
+        streaming_error: Exception | None = None
+        for index, response_format in enumerate(formats):
+            try:
+                with open(audio_path, "rb") as audio_file:
+                    with streaming.create(
+                        model=self.model,
+                        file=audio_file,
+                        response_format=response_format,
+                        stream=True,
+                    ) as response:
+                        for line in response.iter_lines():
+                            if not line or line.startswith(":"):
+                                continue
+                            if line.strip().upper() == "DATA: [DONE]":
+                                break
+                            if not line.startswith("data:"):
+                                continue
+                            payload = line[len("data:") :].strip()
+                            if not payload or payload == "[DONE]":
+                                continue
+                            try:
+                                data: Dict[str, object] = json.loads(payload)
+                            except json.JSONDecodeError:
+                                LOGGER.debug("Failed to decode streaming payload: %s", payload)
+                                continue
+                            event_type = str(data.get("type", ""))
+                            if event_type == "transcript.text.delta":
+                                delta = str(data.get("delta", ""))
+                                if delta:
+                                    text_parts.append(delta)
+                                    incremental_segments.append(delta)
+                                    emit_partial()
+                            elif event_type == "transcript.text.done":
+                                text = str(data.get("text", ""))
+                                if text:
+                                    text_parts.append(text)
+                                    incremental_segments.append(text)
+                                    emit_partial()
+                            elif event_type == "response.completed":
+                                break
 
-                    parsed = response.parse()
-        except Exception as exc:  # pragma: no cover - requires network failures
-            LOGGER.exception("Streaming transcription failed; falling back to batch mode: %s", exc)
+                        parsed = response.parse()
+                break
+            except self._openai_error_cls as exc:
+                if self._is_response_format_error(exc) and index < len(formats) - 1:
+                    LOGGER.info(
+                        "Response format '%s' is not supported by model '%s'; retrying with '%s'",
+                        response_format,
+                        self.model,
+                        formats[index + 1],
+                    )
+                    continue
+                streaming_error = exc
+                break
+            except Exception as exc:  # pragma: no cover - requires network failures
+                streaming_error = exc
+                break
+
+        if parsed is None:
+            if streaming_error is not None:
+                if isinstance(streaming_error, self._openai_error_cls) and self._is_response_format_error(streaming_error):
+                    LOGGER.info(
+                        "Streaming response formats unsupported for model '%s'; falling back to batch mode",
+                        self.model,
+                    )
+                else:
+                    LOGGER.exception(
+                        "Streaming transcription failed; falling back to batch mode: %s",
+                        streaming_error,
+                    )
             return self.transcribe(session, audio_path)
 
         segments: List[TranscriptSegment] = []
@@ -190,6 +232,70 @@ class OpenAITranscriptionService(TranscriptionService):
                 LOGGER.exception("Transcript update callback raised an exception")
 
         return final_result
+
+
+    def _candidate_response_formats(self) -> List[str]:
+        return ["verbose_json", "json", "text"]
+
+    def _is_response_format_error(self, exc: Exception) -> bool:
+        message = str(getattr(exc, "message", None) or exc)
+        return "response_format" in message and "unsupported" in message.lower()
+
+    def _parse_transcription_response(self, response: Any) -> tuple[str, List[TranscriptSegment], Any]:
+        if response is None:
+            return "", [], None
+
+        raw_response = response
+        data: Optional[Dict[str, Any]] = None
+        text = ""
+        segments_data: List[Any] = []
+
+        if isinstance(response, dict):
+            data = response
+        elif hasattr(response, "model_dump"):
+            try:
+                data = response.model_dump()
+            except Exception:  # pragma: no cover - defensive
+                data = None
+        elif hasattr(response, "to_dict"):
+            try:
+                data = response.to_dict()  # type: ignore[assignment]
+            except Exception:  # pragma: no cover - defensive
+                data = None
+
+        if data is not None:
+            text = str(data.get("text", "") or "")
+            segments_source = data.get("segments", []) or []
+            if isinstance(segments_source, list):
+                segments_data = segments_source
+        elif hasattr(response, "text"):
+            text = str(getattr(response, "text", "") or "")
+            possible_segments = getattr(response, "segments", None)
+            if isinstance(possible_segments, list):
+                segments_data = possible_segments
+        elif isinstance(response, str):
+            text = response
+
+        segments: List[TranscriptSegment] = []
+        for segment in segments_data:
+            if isinstance(segment, dict):
+                segments.append(
+                    TranscriptSegment(
+                        start=segment.get("start"),
+                        end=segment.get("end"),
+                        text=(segment.get("text") or "").strip(),
+                    )
+                )
+            else:
+                segments.append(
+                    TranscriptSegment(
+                        text=str(getattr(segment, "text", segment) or "").strip(),
+                        start=getattr(segment, "start", None),
+                        end=getattr(segment, "end", None),
+                    )
+                )
+
+        return text, segments, raw_response
 
 
 __all__ = ["OpenAITranscriptionService"]
