@@ -36,6 +36,8 @@ Install the package in editable mode with the audio extras:
 pip install -e .[audio]
 ```
 
+> **Windows users:** WASAPI loopback capture requires `sounddevice` version 0.4.6 or later, which is included in the `audio` extras.
+
 Listing audio devices:
 
 ```bash

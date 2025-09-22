@@ -19,7 +19,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-audio = ["sounddevice>=0.4"]
+audio = ["sounddevice>=0.4.6"]
 
 [project.scripts]
 adsum = "adsum.cli:app"
