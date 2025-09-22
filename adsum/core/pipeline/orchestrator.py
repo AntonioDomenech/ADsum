@@ -101,6 +101,7 @@ class RecordingOrchestrator:
         notes: Optional[NotesService] = None,
         control: Optional[RecordingControl] = None,
         transcript_callback: Optional[Callable[[TranscriptResult], None]] = None,
+        transcript_update_callback: Optional[Callable[[TranscriptResult], None]] = None,
     ) -> RecordingOutcome:
         if not request.captures:
             raise ValueError("At least one capture channel must be configured")
@@ -191,7 +192,25 @@ class RecordingOrchestrator:
                 if path is None:
                     continue
                 LOGGER.info("Transcribing %s", path)
-                result = transcription.transcribe(session, path)
+                latest_update: Optional[TranscriptResult] = None
+
+                def _handle_update(update: TranscriptResult) -> None:
+                    nonlocal latest_update
+                    latest_update = update
+                    if transcript_update_callback is not None:
+                        try:
+                            transcript_update_callback(update)
+                        except Exception:  # pragma: no cover - callbacks should not break pipeline
+                            LOGGER.exception("Transcript update callback raised an exception")
+
+                result = transcription.transcribe_stream(
+                    session,
+                    path,
+                    on_update=_handle_update if transcript_update_callback is not None else None,
+                )
+                if transcript_update_callback is not None:
+                    if latest_update is None or latest_update.model_dump() != result.model_dump():
+                        _handle_update(result)
                 transcripts[result.channel] = result
                 self.store.save_transcript(result)
                 if transcript_callback is not None:
