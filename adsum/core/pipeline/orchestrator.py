@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import contextlib
 import time
+from threading import Event
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -39,6 +40,42 @@ class RecordingOutcome:
     notes: Optional[NoteDocument] = None
 
 
+class RecordingControl:
+    """Runtime control flags for long-running recording sessions."""
+
+    def __init__(self) -> None:
+        self._stop = Event()
+        self._resume = Event()
+        self._resume.set()
+
+    def request_stop(self) -> None:
+        self._stop.set()
+        self._resume.set()
+
+    def request_pause(self) -> None:
+        if not self._stop.is_set():
+            self._resume.clear()
+
+    def request_resume(self) -> None:
+        if not self._stop.is_set():
+            self._resume.set()
+
+    @property
+    def should_stop(self) -> bool:
+        return self._stop.is_set()
+
+    @property
+    def is_paused(self) -> bool:
+        return not self._resume.is_set() and not self._stop.is_set()
+
+    @property
+    def is_recording(self) -> bool:
+        return self._resume.is_set() and not self._stop.is_set()
+
+    def wait_for_resume(self, timeout: float = 0.1) -> None:
+        self._resume.wait(timeout)
+
+
 class RecordingOrchestrator:
     """High-level coordinator for recording sessions."""
 
@@ -62,6 +99,7 @@ class RecordingOrchestrator:
         duration: Optional[float] = None,
         transcription: Optional[TranscriptionService] = None,
         notes: Optional[NotesService] = None,
+        control: Optional[RecordingControl] = None,
     ) -> RecordingOutcome:
         if not request.captures:
             raise ValueError("At least one capture channel must be configured")
@@ -83,6 +121,13 @@ class RecordingOrchestrator:
                 capture.start()
 
             while True:
+                if control and control.should_stop:
+                    break
+
+                if control and control.is_paused:
+                    control.wait_for_resume(timeout=0.1)
+                    continue
+
                 active = False
                 for channel, capture in request.captures.items():
                     chunk = capture.read(timeout=0.1)
@@ -91,8 +136,11 @@ class RecordingOrchestrator:
                         active = True
                 if duration is not None and time.monotonic() - start_time >= duration:
                     break
+                if control and control.should_stop:
+                    break
                 if not active and duration is None:
-                    # Nothing captured yet but no duration limit -> continue waiting
+                    if control:
+                        control.wait_for_resume(timeout=0.1)
                     continue
             LOGGER.info("Recording duration reached; stopping streams")
         except KeyboardInterrupt:
@@ -155,5 +203,10 @@ class RecordingOrchestrator:
         return RecordingOutcome(session=session, transcripts=transcripts, notes=note_document)
 
 
-__all__ = ["RecordingOrchestrator", "RecordingRequest", "RecordingOutcome"]
+__all__ = [
+    "RecordingControl",
+    "RecordingOrchestrator",
+    "RecordingRequest",
+    "RecordingOutcome",
+]
 

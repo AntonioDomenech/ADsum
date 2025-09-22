@@ -42,13 +42,15 @@ Listing audio devices:
 adsum devices
 ```
 
-Starting a recording session (press `Ctrl+C` to stop):
+Launching the interactive console UI (recordings are controlled from there):
 
 ```bash
-adsum record "Weekly Sync" --mic-device 2 --system-device 5 --transcription-backend openai --notes-backend openai
+adsum ui --mic-device 2 --system-device 5 --transcription-backend openai --notes-backend openai
 ```
 
-The command records each channel to `recordings/<session-id>/raw`, mixes down a combined track, and optionally sends it for transcription and note generation. Results are stored in `adsum.db`.
+The UI launches from the terminal and lets you start, pause, resume, and stop recordings without additional CLI commands. Each channel is written to `recordings/<session-id>/raw`, a combined track is optionally rendered, and transcription/note generation can be triggered from the interface. Results are stored in `adsum.db`.
+
+Use the "Configure environment" menu entry to inspect or update any `ADSUM_` variables directly from the UI. Changes are persisted to your `.env` file for future sessions.
 
 ## Configuration
 
