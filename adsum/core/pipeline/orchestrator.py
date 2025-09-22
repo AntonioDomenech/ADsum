@@ -180,13 +180,16 @@ class RecordingOrchestrator:
 
         mix_path: Optional[Path] = None
         if request.mix_down and len(capture_paths) >= 1:
-            mix_path = dirs["processed"] / "mix.wav"
+            candidate_mix_path = dirs["processed"] / "mix.wav"
             try:
-                mix_audio_files(list(capture_paths.values()), mix_path)
-                session.mix_path = mix_path
-                self.store.update_mix_path(session.id, mix_path)
+                mix_audio_files(list(capture_paths.values()), candidate_mix_path)
             except Exception as exc:  # pragma: no cover - exercised only with problematic files
                 LOGGER.exception("Failed to mix down audio: %s", exc)
+                mix_path = None
+            else:
+                mix_path = candidate_mix_path
+                session.mix_path = mix_path
+                self.store.update_mix_path(session.id, mix_path)
 
         transcripts: Dict[str, TranscriptResult] = {}
         if transcription is not None and (mix_path or capture_paths):

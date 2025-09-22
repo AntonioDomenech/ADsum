@@ -11,9 +11,10 @@ from adsum.core.pipeline.orchestrator import (
     RecordingOrchestrator,
     RecordingRequest,
 )
-from adsum.data.models import TranscriptResult
+from adsum.data.models import RecordingSession, TranscriptResult
 from adsum.data.storage import SessionStore
 from adsum.services.notes.dummy import DummyNotesService
+from adsum.services.transcription.base import TranscriptionService
 from adsum.services.transcription.dummy import DummyTranscriptionService
 
 
@@ -65,6 +66,22 @@ class StreamingCapture(AudioCapture):
         return self._chunk
 
 
+class PathTrackingTranscriptionService(TranscriptionService):
+    def __init__(self) -> None:
+        self.paths: list[Path] = []
+
+    def transcribe(
+        self, session: RecordingSession, audio_path: Path
+    ) -> TranscriptResult:
+        self.paths.append(audio_path)
+        text = f"Transcript for {audio_path.stem}"
+        return TranscriptResult(
+            session_id=session.id,
+            channel=audio_path.stem,
+            text=text,
+        )
+
+
 def test_orchestrator_record_pipeline(tmp_path: Path) -> None:
     db_path = tmp_path / "adsum.db"
     store = SessionStore(db_path)
@@ -93,6 +110,47 @@ def test_orchestrator_record_pipeline(tmp_path: Path) -> None:
     assert notes is not None
     sessions = orchestrator.store.list_sessions()
     assert any(session.id == outcome.session.id for session in sessions)
+
+
+def test_orchestrator_uses_raw_targets_when_mix_fails(tmp_path: Path, monkeypatch) -> None:
+    db_path = tmp_path / "adsum.db"
+    store = SessionStore(db_path)
+    orchestrator = RecordingOrchestrator(base_dir=tmp_path / "recordings", store=store)
+
+    sample_rate = 16000
+    chunk = np.zeros((sample_rate // 10, 1), dtype=np.float32)
+    captures = {
+        "microphone": FakeCapture(
+            CaptureInfo(name="microphone", sample_rate=sample_rate, channels=1),
+            [chunk],
+        ),
+        "system": FakeCapture(
+            CaptureInfo(name="system", sample_rate=sample_rate, channels=1),
+            [chunk],
+        ),
+    }
+
+    request = RecordingRequest(name="Mix Failure", captures=captures)
+
+    def _raise_mix_error(*_args, **_kwargs):
+        raise RuntimeError("mix failed")
+
+    monkeypatch.setattr(
+        "adsum.core.pipeline.orchestrator.mix_audio_files", _raise_mix_error
+    )
+
+    transcription = PathTrackingTranscriptionService()
+
+    outcome = orchestrator.record(
+        request,
+        duration=0.05,
+        transcription=transcription,
+    )
+
+    assert outcome.session.mix_path is None
+    recorded_stems = {path.stem for path in transcription.paths}
+    assert recorded_stems == {"microphone", "system"}
+    assert set(outcome.transcripts.keys()) == recorded_stems
 
 
 def test_orchestrator_emits_transcript_updates(tmp_path: Path) -> None:
