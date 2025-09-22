@@ -667,6 +667,7 @@ class RecordingWindowUI:
                 notes=notes,
                 control=control,
                 transcript_callback=self._on_transcript_result,
+                transcript_update_callback=self._on_transcript_result,
             )
             self._pending_outcome = outcome
         except Exception as exc:  # pragma: no cover - runtime behaviour

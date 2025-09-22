@@ -10,8 +10,8 @@ from pydantic import BaseModel, Field
 
 
 class TranscriptSegment(BaseModel):
-    start: float
-    end: float
+    start: Optional[float] = None
+    end: Optional[float] = None
     text: str
 
 
