@@ -185,6 +185,33 @@ class SessionStore:
             action_items=action_items,
         )
 
+    def list_sessions(self, limit: Optional[int] = None) -> List[RecordingSession]:
+        query = "SELECT id, name, created_at, duration, sample_rate, channels, audio_paths, mix_path FROM sessions ORDER BY created_at DESC"
+        params: tuple[object, ...] = ()
+        if limit is not None:
+            query += " LIMIT ?"
+            params = (limit,)
+        with self._connect() as conn:
+            rows = conn.execute(query, params).fetchall()
+
+        sessions: List[RecordingSession] = []
+        for row in rows:
+            audio_paths = {k: Path(v) for k, v in json.loads(row[6]).items()}
+            mix_path = Path(row[7]) if row[7] else None
+            sessions.append(
+                RecordingSession(
+                    id=row[0],
+                    name=row[1],
+                    created_at=row[2],
+                    duration=row[3],
+                    sample_rate=row[4],
+                    channels=row[5],
+                    audio_paths=audio_paths,
+                    mix_path=mix_path,
+                )
+            )
+        return sessions
+
 
 __all__ = ["SessionStore"]
 

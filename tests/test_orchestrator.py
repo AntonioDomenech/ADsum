@@ -1,10 +1,16 @@
 import queue
+import threading
+import time
 from pathlib import Path
 
 import numpy as np
 
 from adsum.core.audio.base import AudioCapture, CaptureInfo
-from adsum.core.pipeline.orchestrator import RecordingOrchestrator, RecordingRequest
+from adsum.core.pipeline.orchestrator import (
+    RecordingControl,
+    RecordingOrchestrator,
+    RecordingRequest,
+)
 from adsum.data.storage import SessionStore
 from adsum.services.notes.dummy import DummyNotesService
 from adsum.services.transcription.dummy import DummyTranscriptionService
@@ -35,6 +41,29 @@ class FakeCapture(AudioCapture):
             return None
 
 
+class StreamingCapture(AudioCapture):
+    def __init__(self, info: CaptureInfo, chunk: np.ndarray) -> None:
+        self.info = info
+        self._chunk = chunk
+        self._stopped = False
+
+    def start(self) -> None:
+        self._stopped = False
+
+    def stop(self) -> None:
+        self._stopped = True
+
+    def close(self) -> None:
+        self._stopped = True
+
+    def read(self, timeout: float | None = None):
+        if self._stopped:
+            return None
+        if timeout and timeout > 0:
+            time.sleep(min(timeout, 0.01))
+        return self._chunk
+
+
 def test_orchestrator_record_pipeline(tmp_path: Path) -> None:
     db_path = tmp_path / "adsum.db"
     store = SessionStore(db_path)
@@ -61,3 +90,29 @@ def test_orchestrator_record_pipeline(tmp_path: Path) -> None:
     assert transcripts and transcripts[0].text
     notes = orchestrator.store.fetch_notes(outcome.session.id)
     assert notes is not None
+    sessions = orchestrator.store.list_sessions()
+    assert any(session.id == outcome.session.id for session in sessions)
+
+
+def test_orchestrator_respects_recording_control(tmp_path: Path) -> None:
+    db_path = tmp_path / "adsum.db"
+    store = SessionStore(db_path)
+    orchestrator = RecordingOrchestrator(base_dir=tmp_path / "recordings", store=store)
+
+    sample_rate = 8000
+    chunk = np.zeros((sample_rate // 20, 1), dtype=np.float32)
+    capture_info = CaptureInfo(name="loop", sample_rate=sample_rate, channels=1)
+    capture = StreamingCapture(capture_info, chunk)
+
+    request = RecordingRequest(name="Controlled Session", captures={"loop": capture})
+    control = RecordingControl()
+
+    stopper = threading.Timer(0.05, control.request_stop)
+    stopper.start()
+    try:
+        outcome = orchestrator.record(request, control=control)
+    finally:
+        stopper.cancel()
+
+    assert outcome.session.duration > 0
+    assert orchestrator.store.fetch_session(outcome.session.id) is not None

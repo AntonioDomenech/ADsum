@@ -2,69 +2,43 @@
 
 from __future__ import annotations
 
-import sys
-from pathlib import Path
-from typing import Dict, Optional
+from typing import Optional
 
 import typer
 
 from .config import get_settings
-from .core.audio.base import AudioCapture, CaptureError, CaptureInfo
-from .core.pipeline.orchestrator import RecordingOrchestrator, RecordingRequest
-from .logging import configure_logging, get_logger
-from .services.notes.dummy import DummyNotesService
-from .services.notes.openai_notes import OpenAINotesService
-from .services.transcription.dummy import DummyTranscriptionService
-from .services.transcription.openai_client import OpenAITranscriptionService
 from .core.audio.devices import format_device_table
+from .logging import configure_logging
+from .ui import RecordingConsoleUI
 
 app = typer.Typer(help="ADsum meeting recorder")
-LOGGER = get_logger(__name__)
 
 
-def _parse_device(device: Optional[str]) -> Optional[int | str]:
-    if device is None:
-        return None
-    if device.isdigit():
-        return int(device)
-    return device
-
-
-def _build_capture(channel: str, device: Optional[str], sample_rate: int, channels: int) -> Optional[AudioCapture]:
-    if device is None:
-        return None
-    try:
-        from .core.audio.sounddevice_backend import SoundDeviceCapture
-    except ImportError as exc:  # pragma: no cover - handled by dependency guards
-        raise typer.BadParameter("sounddevice dependency is required for audio capture") from exc
-
-    capture_info = CaptureInfo(name=channel, sample_rate=sample_rate, channels=channels, device=str(device))
-    try:
-        return SoundDeviceCapture(info=capture_info, device=_parse_device(device))
-    except CaptureError as exc:
-        raise typer.BadParameter(str(exc)) from exc
-
-
-def _get_transcription_backend(name: str):
-    name = name.lower()
-    if name in {"", "none", "off"}:
-        return None
-    if name == "dummy":
-        return DummyTranscriptionService()
-    if name == "openai":
-        return OpenAITranscriptionService()
-    raise typer.BadParameter(f"Unknown transcription backend: {name}")
-
-
-def _get_notes_backend(name: str):
-    name = name.lower()
-    if name in {"", "none", "off"}:
-        return None
-    if name == "dummy":
-        return DummyNotesService()
-    if name == "openai":
-        return OpenAINotesService()
-    raise typer.BadParameter(f"Unknown notes backend: {name}")
+def _launch_ui(
+    *,
+    name: Optional[str],
+    mic_device: Optional[str],
+    system_device: Optional[str],
+    mix_down: bool,
+    transcription_backend: str,
+    notes_backend: str,
+    sample_rate: Optional[int],
+    channels: Optional[int],
+) -> None:
+    configure_logging()
+    settings = get_settings()
+    ui = RecordingConsoleUI(
+        settings=settings,
+        sample_rate=sample_rate,
+        channels=channels,
+        mix_down=mix_down,
+        default_name=name,
+        default_mic=mic_device,
+        default_system=system_device,
+        transcription_backend_name=transcription_backend,
+        notes_backend_name=notes_backend,
+    )
+    ui.run()
 
 
 @app.command()
@@ -76,50 +50,62 @@ def devices() -> None:
 
 
 @app.command()
-def record(
-    name: str = typer.Argument(..., help="Session name"),
-    mic_device: Optional[str] = typer.Option(None, help="Input device id/name for microphone"),
-    system_device: Optional[str] = typer.Option(None, help="Input device id/name for system audio"),
-    duration: Optional[float] = typer.Option(None, help="Duration in seconds; default waits for Ctrl+C"),
+def ui(
+    name: Optional[str] = typer.Argument(None, help="Optional session name to pre-fill"),
+    mic_device: Optional[str] = typer.Option(None, help="Default microphone device id/name"),
+    system_device: Optional[str] = typer.Option(None, help="Default system audio device id/name"),
     mix_down: bool = typer.Option(True, "--mix-down/--no-mix-down", help="Create a mixed track"),
-    transcription_backend: str = typer.Option("dummy", help="Transcription backend: none/dummy/openai"),
-    notes_backend: str = typer.Option("dummy", help="Notes backend: none/dummy/openai"),
+    transcription_backend: str = typer.Option(
+        "dummy", help="Transcription backend to pre-select: none/dummy/openai"
+    ),
+    notes_backend: str = typer.Option(
+        "dummy", help="Notes backend to pre-select: none/dummy/openai"
+    ),
     sample_rate: Optional[int] = typer.Option(None, help="Override sample rate"),
-    channels: Optional[int] = typer.Option(None, help="Override number of channels per capture"),
+    channels: Optional[int] = typer.Option(None, help="Override number of channels"),
 ) -> None:
-    """Start a recording session."""
+    """Launch the interactive UI without starting a recording directly."""
 
-    configure_logging()
-    settings = get_settings()
-    sr = sample_rate or settings.sample_rate
-    ch = channels or settings.channels
+    _launch_ui(
+        name=name,
+        mic_device=mic_device,
+        system_device=system_device,
+        mix_down=mix_down,
+        transcription_backend=transcription_backend,
+        notes_backend=notes_backend,
+        sample_rate=sample_rate,
+        channels=channels,
+    )
 
-    captures: Dict[str, AudioCapture] = {}
-    mic_capture = _build_capture("microphone", mic_device, sr, ch)
-    if mic_capture is not None:
-        captures["microphone"] = mic_capture
-    system_capture = _build_capture("system", system_device, sr, ch)
-    if system_capture is not None:
-        captures["system"] = system_capture
 
-    if not captures:
-        raise typer.BadParameter("At least one audio device must be provided")
+@app.command()
+def record(
+    name: Optional[str] = typer.Argument(None, help="Optional session name to pre-fill"),
+    mic_device: Optional[str] = typer.Option(None, help="Default microphone device id/name"),
+    system_device: Optional[str] = typer.Option(None, help="Default system audio device id/name"),
+    mix_down: bool = typer.Option(True, "--mix-down/--no-mix-down", help="Create a mixed track"),
+    transcription_backend: str = typer.Option(
+        "dummy", help="Transcription backend to pre-select: none/dummy/openai"
+    ),
+    notes_backend: str = typer.Option(
+        "dummy", help="Notes backend to pre-select: none/dummy/openai"
+    ),
+    sample_rate: Optional[int] = typer.Option(None, help="Override sample rate"),
+    channels: Optional[int] = typer.Option(None, help="Override number of channels"),
+) -> None:
+    """Backward-compatible alias that now launches the interactive UI."""
 
-    orchestrator = RecordingOrchestrator()
-    transcription = _get_transcription_backend(transcription_backend)
-    notes = _get_notes_backend(notes_backend)
-
-    request = RecordingRequest(name=name, captures=captures, mix_down=mix_down)
-    outcome = orchestrator.record(request, duration=duration, transcription=transcription, notes=notes)
-
-    typer.echo(f"Session saved at {outcome.session.id}")
-    if outcome.transcripts:
-        typer.echo("Transcripts:")
-        for channel, transcript in outcome.transcripts.items():
-            typer.echo(f"  {channel}: {len(transcript.text.split())} words")
-    if outcome.notes:
-        typer.echo("Notes summary:")
-        typer.echo(outcome.notes.summary)
+    typer.echo("Launching ADsum UI. Recording control is now handled interactively.")
+    _launch_ui(
+        name=name,
+        mic_device=mic_device,
+        system_device=system_device,
+        mix_down=mix_down,
+        transcription_backend=transcription_backend,
+        notes_backend=notes_backend,
+        sample_rate=sample_rate,
+        channels=channels,
+    )
 
 
 if __name__ == "__main__":  # pragma: no cover
