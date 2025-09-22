@@ -21,6 +21,7 @@ class Settings(BaseSettings):
     chunk_seconds: float = 1.0
     openai_transcription_model: str = "gpt-4o-mini-transcribe"
     openai_notes_model: str = "gpt-4o-mini"
+    openai_api_key: Optional[str] = None
     session_prefix: str = "session"
 
     model_config = SettingsConfigDict(

@@ -181,11 +181,19 @@ class RecordingConsoleUI:
         except ServiceConfigurationError as exc:
             self._error(str(exc))
             return
+        except Exception as exc:  # pragma: no cover - runtime errors handled interactively
+            LOGGER.exception("Failed to initialise transcription backend: %s", exc)
+            self._error(f"Failed to initialise transcription backend: {exc}")
+            return
 
         try:
             notes = resolve_notes_backend(notes_name)
         except ServiceConfigurationError as exc:
             self._error(str(exc))
+            return
+        except Exception as exc:  # pragma: no cover - runtime errors handled interactively
+            LOGGER.exception("Failed to initialise notes backend: %s", exc)
+            self._error(f"Failed to initialise notes backend: {exc}")
             return
 
         self._transcription_backend_name = transcription_name
