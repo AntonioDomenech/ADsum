@@ -63,6 +63,7 @@ Environment variables customise behaviour via `pydantic` settings (prefix `ADSUM
 - `ADSUM_CHUNK_SECONDS`: Preferred chunk duration when streaming (default `1.0`).
 - `ADSUM_OPENAI_TRANSCRIPTION_MODEL`: Model used for OpenAI transcription.
 - `ADSUM_OPENAI_NOTES_MODEL`: Model used for OpenAI notes/summarisation.
+- `ADSUM_OPENAI_API_KEY`: Optional API key forwarded to the OpenAI client (falls back to `OPENAI_API_KEY`).
 
 ### Choosing a transcription backend
 
@@ -73,8 +74,10 @@ provider:
 - **CLI** – pass `--transcription-backend openai` (or your preferred backend) to `adsum record` or `adsum ui` commands.
 - **Window UI** – open *Configure environment ▸ Transcription backend* and select a real provider before starting a session.
 
-If the dummy backend is still active when you start recording, both interfaces surface a prominent warning so you can switch to
-a real service before relying on the transcripts.
+If you choose one of the OpenAI providers, make sure an API key is available. Set the standard `OPENAI_API_KEY` environment variable
+before launching ADsum or configure `ADSUM_OPENAI_API_KEY` via the *Environment* menu so the desktop app can save it to your `.env` file.
+If the dummy backend is still active when you start recording, both interfaces surface a prominent warning so you can switch to a
+real service before relying on the transcripts.
 
 ## Development
 

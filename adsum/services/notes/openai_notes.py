@@ -17,10 +17,23 @@ class OpenAINotesService(NotesService):
         settings = get_settings()
         self.model = model or settings.openai_notes_model
         try:
-            from openai import OpenAI  # type: ignore
+            from openai import OpenAI, OpenAIError  # type: ignore
         except ImportError as exc:  # pragma: no cover - runtime dependency guard
             raise RuntimeError("openai package is required for OpenAINotesService") from exc
-        self.client = OpenAI()
+        client_kwargs = {}
+        if settings.openai_api_key:
+            client_kwargs["api_key"] = settings.openai_api_key
+
+        try:
+            self.client = OpenAI(**client_kwargs)
+        except OpenAIError as exc:
+            message = str(exc)
+            if "api_key" in message.lower():
+                raise RuntimeError(
+                    "OpenAI API key not configured. Set the OPENAI_API_KEY environment variable "
+                    "or configure ADSUM_OPENAI_API_KEY from the Environment menu."
+                ) from exc
+            raise RuntimeError(f"Failed to initialise OpenAI notes client: {message}") from exc
 
     def generate_notes(
         self, session: RecordingSession, transcripts: Iterable[TranscriptResult]
