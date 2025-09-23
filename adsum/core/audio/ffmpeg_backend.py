@@ -92,21 +92,21 @@ def _detect_platform() -> str:
     return "unknown"
 
 
-def _lookup_sounddevice_device_name(index: int) -> Optional[str]:
-    """Return the sounddevice name for the given index when available."""
+def _lookup_ffmpeg_device_name(index: int) -> Optional[str]:
+    """Return the FFmpeg reported name for the given index when available."""
 
     try:
-        from .devices import list_input_devices
-    except Exception:  # pragma: no cover - optional dependency or import error
+        from .devices import list_ffmpeg_devices
+    except Exception:  # pragma: no cover - defensive import guard
         return None
 
     try:
-        devices = list_input_devices()
-    except Exception:  # pragma: no cover - runtime optional dependency errors
+        devices = list_ffmpeg_devices()
+    except Exception:  # pragma: no cover - runtime enumeration errors
         return None
 
     for device in devices:
-        if device.id == index:
+        if device.index == index:
             return device.name
     return None
 
@@ -137,7 +137,7 @@ def _guess_ffmpeg_device_target(device: str) -> Optional[str]:
         else:
             resolved = base
             if base.isdigit():
-                lookup = _lookup_sounddevice_device_name(int(base))
+                lookup = _lookup_ffmpeg_device_name(int(base))
                 if lookup:
                     resolved = lookup
             target = f"audio={_quote_windows_device_name(resolved)}"

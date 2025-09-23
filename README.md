@@ -30,13 +30,14 @@ adsum/
 
 ## Getting started
 
-Install the package in editable mode with the audio extras:
+Install the package in editable mode:
 
 ```bash
-pip install -e .[audio]
+pip install -e .
 ```
 
-> **Windows users:** WASAPI loopback capture requires `sounddevice` version 0.4.6 or later, which is included in the `audio` extras.
+> **All platforms:** Ensure FFmpeg is installed and available on `PATH`, or set
+`ADSUM_FFMPEG_BINARY` to the executable path.
 
 Listing audio devices:
 
@@ -67,7 +68,7 @@ dshow:audio=Bluetooth Headset?sample_rate=48000&channels=1
 avfoundation:1?channels=1
 ```
 
-Additional FFmpeg flags can be added via query parameters. For instance `args=-thread_queue_size 2048` (parsed with shell-style quoting) or `opt_timeout=5` (expanded to `-timeout 5`). If you prefer the previous PortAudio backend set `ADSUM_AUDIO_BACKEND=sounddevice`.
+Additional FFmpeg flags can be added via query parameters. For instance `args=-thread_queue_size 2048` (parsed with shell-style quoting) or `opt_timeout=5` (expanded to `-timeout 5`).
 
 Use the "Configure environment" menu entry to inspect or update any `ADSUM_` variables directly from the UI. Changes are persisted to your `.env` file for future sessions.
 
@@ -93,7 +94,7 @@ Environment variables customise behaviour via `pydantic` settings (prefix `ADSUM
 - `ADSUM_SAMPLE_RATE`: Sample rate used for capture (default `16000`).
 - `ADSUM_CHANNELS`: Number of channels per capture stream (default `1`).
 - `ADSUM_CHUNK_SECONDS`: Preferred chunk duration when streaming (default `1.0`).
-- `ADSUM_AUDIO_BACKEND`: Audio engine to use (`ffmpeg` by default, `sounddevice` for the legacy backend).
+- `ADSUM_AUDIO_BACKEND`: Audio engine to use (`ffmpeg`).
 - `ADSUM_FFMPEG_BINARY`: Override FFmpeg executable path when the binary is not available on PATH.
   On Windows, ADsum also checks common installation folders such as `C:\\ffmpeg\\bin` and
   `C:\\Program Files\\FFmpeg\\bin`. If FFmpeg still cannot be found, download a build from
