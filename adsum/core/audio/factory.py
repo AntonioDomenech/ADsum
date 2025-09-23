@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from typing import Optional
 
@@ -153,6 +154,13 @@ def create_capture(request: CaptureRequest) -> Optional[AudioCapture]:
 
         if resolved_binary is None:
             error = FFmpegBinaryNotFoundError(settings.ffmpeg_binary)
+            search_path = os.environ.get("PATH", "")
+            LOGGER.warning(
+                "FFmpeg binary '%s' is unavailable; install FFmpeg or set ADSUM_FFMPEG_BINARY "
+                "to the executable path. Current PATH: %s",
+                settings.ffmpeg_binary,
+                search_path,
+            )
             LOGGER.info(
                 "FFmpeg binary '%s' is unavailable; attempting sounddevice fallback for %s",
                 settings.ffmpeg_binary,
