@@ -57,6 +57,20 @@ class FFmpegDeviceSpec:
     chunk_frames: Optional[int]
 
 
+class FFmpegBinaryNotFoundError(CaptureError):
+    """Raised when the FFmpeg executable cannot be located."""
+
+    def __init__(self, requested: str) -> None:
+        message = (
+            "FFmpeg binary "
+            f"'{requested or 'ffmpeg'}' was not found. Install FFmpeg and ensure the "
+            "executable is on PATH, or set ADSUM_FFMPEG_BINARY to the full path to the "
+            "ffmpeg executable."
+        )
+        super().__init__(message)
+        self.requested = requested
+
+
 def _detect_platform() -> str:
     """Return a simplified platform identifier used for heuristics."""
 
@@ -295,11 +309,7 @@ class FFmpegCapture(AudioCapture):
 
         executable = _resolve_binary(self._binary)
         if executable is None:
-            raise CaptureError(
-                "FFmpeg binary "
-                f"'{self._binary}' was not found. Install FFmpeg and ensure the executable "
-                "is on PATH, or set ADSUM_FFMPEG_BINARY to the full path to the ffmpeg executable."
-            )
+            raise FFmpegBinaryNotFoundError(self._binary)
 
         command = self._build_command(executable)
         LOGGER.info("Starting FFmpeg capture for %s using %s", self.info.name, executable)
@@ -529,5 +539,10 @@ def _resolve_binary(binary: str) -> Optional[str]:
     return None
 
 
-__all__ = ["FFmpegCapture", "FFmpegDeviceSpec", "parse_ffmpeg_device"]
+__all__ = [
+    "FFmpegBinaryNotFoundError",
+    "FFmpegCapture",
+    "FFmpegDeviceSpec",
+    "parse_ffmpeg_device",
+]
 

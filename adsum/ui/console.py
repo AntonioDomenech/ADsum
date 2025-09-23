@@ -24,6 +24,7 @@ from ..core.audio.factory import (
     DISABLED_DEVICE_SENTINEL,
     create_capture,
 )
+from ..core.audio.ffmpeg_backend import FFmpegBinaryNotFoundError
 
 
 DEVICE_DISABLE_KEYWORDS = {"skip", "none", "off", "disabled"}
@@ -92,6 +93,7 @@ class RecordingConsoleUI:
         self._pending_error: Optional[Exception] = None
         self._last_outcome: Optional[RecordingOutcome] = None
         self._running = True
+        self._ffmpeg_prompted = False
 
     # ------------------------------------------------------------------
     # Public API
@@ -479,7 +481,8 @@ class RecordingConsoleUI:
             self._active.thread.join()
             self._active = None
             if self._pending_error:
-                self._error(f"Recording failed: {self._pending_error}")
+                if not self._handle_recording_failure(self._pending_error):
+                    self._error(f"Recording failed: {self._pending_error}")
             elif self._pending_outcome:
                 self._last_outcome = self._pending_outcome
                 summary = f"Session saved at {self._pending_outcome.session.id}"
@@ -494,6 +497,50 @@ class RecordingConsoleUI:
                     self._info("Notes summary available via the notes menu option.")
             self._pending_error = None
             self._pending_outcome = None
+
+    def _handle_recording_failure(self, exc: Exception) -> bool:
+        if isinstance(exc, FFmpegBinaryNotFoundError):
+            self._error(str(exc))
+            self._maybe_prompt_ffmpeg_path()
+            return True
+        return False
+
+    def _maybe_prompt_ffmpeg_path(self) -> None:
+        if self._ffmpeg_prompted:
+            self._info(
+                "FFmpeg path is still missing. Set ADSUM_FFMPEG_BINARY from the environment menu "
+                "when you are ready."
+            )
+            return
+
+        self._ffmpeg_prompted = True
+        print()
+        choice = input(
+            "Specify the full path to ffmpeg now? This will update ADSUM_FFMPEG_BINARY [y/N]: "
+        ).strip().lower()
+        if choice not in {"y", "yes"}:
+            self._info(
+                "FFmpeg binary not configured. Use the environment configuration menu to set "
+                "ADSUM_FFMPEG_BINARY later."
+            )
+            return
+
+        path = input("Enter the absolute path to ffmpeg (e.g. C:/Tools/ffmpeg/bin/ffmpeg.exe): ").strip()
+        if not path:
+            self._info(
+                "No path provided. Re-run the command or open the environment menu to configure "
+                "the FFmpeg binary later."
+            )
+            return
+
+        try:
+            updated = update_environment_setting("ffmpeg_binary", path)
+        except EnvironmentSettingError as exc:
+            self._error(f"Failed to store FFmpeg path: {exc}")
+            return
+
+        self._apply_settings(updated)
+        self._info(f"FFmpeg path saved to ADSUM_FFMPEG_BINARY: {path}")
 
     def _shutdown_active_recording(self) -> None:
         if self._active and self._active.thread.is_alive():
