@@ -125,6 +125,7 @@ class RecordingWindowUI:
         self._pending_error: Optional[Exception] = None
         self._last_outcome: Optional[RecordingOutcome] = None
         self._fonts: Dict[str, Any] = {}
+        self._theme_colors: Dict[str, str] = {}
         self._ffmpeg_prompted = False
 
         # Tk widgets set during run()
@@ -155,8 +156,36 @@ class RecordingWindowUI:
         self._root.columnconfigure(0, weight=1)
         self._root.rowconfigure(0, weight=1)
 
-        main = ttk.Frame(self._root, padding=(24, 24, 24, 28), style="Main.TFrame")
-        main.grid(row=0, column=0, sticky="nsew")
+        scroll_container = ttk.Frame(self._root, style="Main.TFrame")
+        scroll_container.grid(row=0, column=0, sticky="nsew")
+        scroll_container.columnconfigure(0, weight=1)
+        scroll_container.rowconfigure(0, weight=1)
+
+        canvas_bg = self._theme_colors.get("base_bg", "#f5f7fa")
+        canvas = tk.Canvas(
+            scroll_container,
+            borderwidth=0,
+            highlightthickness=0,
+            background=canvas_bg,
+        )
+        canvas.grid(row=0, column=0, sticky="nsew")
+
+        scrollbar = ttk.Scrollbar(scroll_container, orient="vertical", command=canvas.yview)
+        scrollbar.grid(row=0, column=1, sticky="ns")
+        canvas.configure(yscrollcommand=scrollbar.set)
+
+        main = ttk.Frame(canvas, padding=(24, 24, 24, 28), style="Main.TFrame")
+        main_window = canvas.create_window((0, 0), window=main, anchor="nw")
+
+        def _on_main_configure(event: Any) -> None:
+            canvas.configure(scrollregion=canvas.bbox("all"))
+
+        def _on_canvas_configure(event: Any) -> None:
+            canvas.itemconfigure(main_window, width=event.width)
+
+        main.bind("<Configure>", _on_main_configure)
+        canvas.bind("<Configure>", _on_canvas_configure)
+
         main.columnconfigure(0, weight=1)
         main.rowconfigure(4, weight=1)
         main.rowconfigure(5, weight=1)
@@ -350,6 +379,7 @@ class RecordingWindowUI:
         )
 
         self._info("Launching ADsum window UI. Close the window to exit.")
+        self._restore_last_session_transcripts()
         self._flush_messages()
         self._render_transcription_text()
         self._schedule_refresh()
@@ -406,6 +436,20 @@ class RecordingWindowUI:
         danger = "#ef4444"
         danger_active = "#dc2626"
         danger_disabled = "#fecaca"
+
+        self._theme_colors = {
+            "base_bg": base_bg,
+            "card_bg": card_bg,
+            "accent": accent,
+            "accent_active": accent_active,
+            "accent_disabled": accent_disabled,
+            "secondary_bg": secondary_bg,
+            "secondary_active": secondary_active,
+            "tertiary_bg": tertiary_bg,
+            "danger": danger,
+            "danger_active": danger_active,
+            "danger_disabled": danger_disabled,
+        }
 
         style = ttk.Style(self._root)
         try:
@@ -624,6 +668,35 @@ class RecordingWindowUI:
                 self._transcript_queue.get_nowait()
             except queue.Empty:
                 break
+
+    def _restore_last_session_transcripts(self) -> None:
+        sessions = self._orchestrator.store.list_sessions(limit=1)
+        if not sessions:
+            return
+
+        session = sessions[0]
+        transcripts = self._orchestrator.store.fetch_transcripts(session.id)
+        notes = self._orchestrator.store.fetch_notes(session.id)
+
+        transcripts_map = {result.channel: result for result in transcripts}
+        if transcripts_map:
+            self._transcript_results = transcripts_map
+            self._transcription_status = ""
+            self._info(
+                f"Showing transcription from most recent session: {session.name} ({session.id})."
+            )
+        else:
+            self._transcript_results.clear()
+            self._transcription_status = "No transcription available for the most recent session."
+            self._info(
+                f"Most recent session '{session.name}' has no transcription to display yet."
+            )
+
+        self._last_outcome = RecordingOutcome(
+            session=session,
+            transcripts=dict(transcripts_map),
+            notes=notes,
+        )
 
     def _flush_transcription_updates(self) -> None:
         updated_channels: Set[str] = set()
