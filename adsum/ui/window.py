@@ -1065,6 +1065,15 @@ class RecordingWindowUI:
         return stripped
 
     def _auto_detect_working_devices(self) -> Tuple[List[DeviceInfo], str]:
+        backend = (self._settings.audio_backend or "").strip().lower()
+
+        if backend == "ffmpeg":
+            message = format_device_table()
+            self._info(
+                "FFmpeg audio backend active; skipping automatic device probing."
+            )
+            return [], message
+
         devices = list_input_devices()
 
         if not devices:
