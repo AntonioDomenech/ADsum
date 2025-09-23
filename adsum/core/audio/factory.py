@@ -9,6 +9,18 @@ from ...config import get_settings
 from .base import AudioCapture, CaptureError, CaptureInfo
 
 
+DISABLE_DEVICE_KEYWORDS = {"skip", "none", "off", "disabled"}
+DISABLED_DEVICE_SENTINEL = ":disabled:"
+
+
+def _is_disabled_device(value: Optional[str]) -> bool:
+    if value is None:
+        return False
+    if value == DISABLED_DEVICE_SENTINEL:
+        return True
+    return value.strip().lower() in DISABLE_DEVICE_KEYWORDS
+
+
 class CaptureConfigurationError(RuntimeError):
     """Raised when a capture stream cannot be configured."""
 
@@ -54,11 +66,19 @@ def create_capture(request: CaptureRequest) -> Optional[AudioCapture]:
         except ImportError as exc:  # pragma: no cover - defensive
             raise CaptureConfigurationError("FFmpeg backend is unavailable") from exc
 
+        info_device: Optional[str]
+        if request.device is None or (
+            isinstance(request.device, str) and not request.device.strip()
+        ):
+            info_device = "default"
+        else:
+            info_device = str(request.device)
+
         capture_info = CaptureInfo(
             name=request.channel,
             sample_rate=request.sample_rate,
             channels=request.channels,
-            device=str(request.device),
+            device=info_device,
         )
 
         try:
@@ -89,9 +109,10 @@ def create_capture(request: CaptureRequest) -> Optional[AudioCapture]:
             raise CaptureConfigurationError(str(exc)) from exc
 
     if backend == "sounddevice":
-        device = _parse_device(request.device)
-        if device is None:
+        if _is_disabled_device(request.device):
             return None
+
+        device = _parse_device(request.device)
 
         try:
             from .sounddevice_backend import SoundDeviceCapture
@@ -100,11 +121,13 @@ def create_capture(request: CaptureRequest) -> Optional[AudioCapture]:
                 "sounddevice dependency is required for audio capture"
             ) from exc
 
+        info_device = "default" if device is None else str(device)
+
         capture_info = CaptureInfo(
             name=request.channel,
             sample_rate=request.sample_rate,
             channels=request.channels,
-            device=str(request.device),
+            device=info_device,
         )
 
         try:
@@ -115,5 +138,10 @@ def create_capture(request: CaptureRequest) -> Optional[AudioCapture]:
     raise CaptureConfigurationError(f"Unknown audio backend: {backend}")
 
 
-__all__ = ["CaptureConfigurationError", "CaptureRequest", "create_capture"]
+__all__ = [
+    "CaptureConfigurationError",
+    "CaptureRequest",
+    "create_capture",
+    "DISABLED_DEVICE_SENTINEL",
+]
 
