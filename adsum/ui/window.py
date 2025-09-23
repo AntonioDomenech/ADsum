@@ -1230,6 +1230,10 @@ class RecordingWindowUI:
         else:
             devices = list(available_devices)
 
+        ffmpeg_backend_active = (
+            (self._settings.audio_backend or "").strip().lower() == "ffmpeg"
+        )
+
         ffmpeg_devices: List[FFmpegDevice] = []
         if ffmpeg_backend_active:
             ffmpeg_devices = self._load_ffmpeg_devices_for_options()
@@ -1249,9 +1253,6 @@ class RecordingWindowUI:
         main = ttk.Frame(window, padding=(20, 16))
         main.grid(row=0, column=0, sticky="nsew")
         main.columnconfigure(1, weight=1)
-        ffmpeg_backend_active = (
-            (self._settings.audio_backend or "").strip().lower() == "ffmpeg"
-        )
         preview_text: Optional[ScrolledText] = None
 
         preview_row = 6 if ffmpeg_backend_active else None
