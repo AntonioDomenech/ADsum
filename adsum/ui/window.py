@@ -12,10 +12,12 @@ from typing import Any, Deque, Dict, Optional, Set
 
 try:  # pragma: no cover - import guard for optional tkinter dependency
     import tkinter as tk
+    from tkinter import font as tkfont
     from tkinter import messagebox, simpledialog, ttk
     from tkinter.scrolledtext import ScrolledText
 except Exception:  # pragma: no cover - headless environments may lack tkinter
     tk = None  # type: ignore[assignment]
+    tkfont = None  # type: ignore[assignment]
     messagebox = None  # type: ignore[assignment]
     simpledialog = None  # type: ignore[assignment]
     ttk = None  # type: ignore[assignment]
@@ -119,6 +121,7 @@ class RecordingWindowUI:
         self._pending_outcome: Optional[RecordingOutcome] = None
         self._pending_error: Optional[Exception] = None
         self._last_outcome: Optional[RecordingOutcome] = None
+        self._fonts: Dict[str, Any] = {}
 
         # Tk widgets set during run()
         self._root: Optional[tk.Tk] = None
@@ -400,30 +403,97 @@ class RecordingWindowUI:
         danger_active = "#dc2626"
         danger_disabled = "#fecaca"
 
-        style = ttk.Style()
+        style = ttk.Style(self._root)
         try:
             style.theme_use("clam")
         except tk.TclError:  # pragma: no cover - depends on available Tk themes
             pass
 
         self._root.configure(background=base_bg)
-        self._root.option_add("*Font", "Segoe UI 10")
+
+        font_family = "Segoe UI"
+        body_font: Any = ("Arial", 10)
+        caption_font: Any = ("Arial", 9)
+        subheader_font: Any = ("Arial", 11)
+        header_font: Any = ("Arial", 22, "bold")
+        card_title_font: Any = ("Arial", 12, "bold")
+        status_font: Any = ("Arial", 12, "bold")
+        button_font: Any = ("Arial", 10, "bold")
+
+        if tkfont is not None:
+            try:
+                default_font = tkfont.nametofont("TkDefaultFont")
+                default_font.configure(family=font_family, size=10)
+                self._fonts["default"] = default_font
+
+                header_font = tkfont.Font(root=self._root, family=font_family, size=22, weight="bold")
+                subheader_font = tkfont.Font(root=self._root, family=font_family, size=11)
+                card_title_font = tkfont.Font(root=self._root, family=font_family, size=12, weight="bold")
+                body_font = tkfont.Font(root=self._root, family=font_family, size=10)
+                caption_font = tkfont.Font(root=self._root, family=font_family, size=9)
+                status_font = tkfont.Font(root=self._root, family=font_family, size=12, weight="bold")
+                button_font = tkfont.Font(root=self._root, family=font_family, size=10, weight="bold")
+
+                self._fonts.update(
+                    {
+                        "header": header_font,
+                        "subheader": subheader_font,
+                        "card_title": card_title_font,
+                        "body": body_font,
+                        "caption": caption_font,
+                        "status": status_font,
+                        "button": button_font,
+                    }
+                )
+            except tk.TclError:
+                # If Tk cannot create the requested fonts, fall back to defaults.
+                self._fonts.clear()
 
         style.configure("Main.TFrame", background=base_bg)
         style.configure("Card.TFrame", background=card_bg, relief="flat", borderwidth=0)
-        style.configure("Header.TLabel", background=base_bg, foreground="#0f172a", font=("Segoe UI", 22, "bold"))
-        style.configure("Subheader.TLabel", background=base_bg, foreground="#475569", font=("Segoe UI", 11))
-        style.configure("CardTitle.TLabel", background=card_bg, foreground="#0f172a", font=("Segoe UI", 12, "bold"))
-        style.configure("Body.TLabel", background=card_bg, foreground="#475569", font=("Segoe UI", 10))
-        style.configure("Caption.TLabel", background=card_bg, foreground="#64748b", font=("Segoe UI", 9))
+        style.configure(
+            "Header.TLabel",
+            background=base_bg,
+            foreground="#0f172a",
+            font=self._fonts.get("header", header_font),
+        )
+        style.configure(
+            "Subheader.TLabel",
+            background=base_bg,
+            foreground="#475569",
+            font=self._fonts.get("subheader", subheader_font),
+        )
+        style.configure(
+            "CardTitle.TLabel",
+            background=card_bg,
+            foreground="#0f172a",
+            font=self._fonts.get("card_title", card_title_font),
+        )
+        style.configure(
+            "Body.TLabel",
+            background=card_bg,
+            foreground="#475569",
+            font=self._fonts.get("body", body_font),
+        )
+        style.configure(
+            "Caption.TLabel",
+            background=card_bg,
+            foreground="#64748b",
+            font=self._fonts.get("caption", caption_font),
+        )
         style.configure(
             "StatusValue.TLabel",
             background=card_bg,
             foreground=accent,
-            font=("Segoe UI", 12, "bold"),
+            font=self._fonts.get("status", status_font),
         )
 
-        style.configure("TButton", padding=(12, 10), font=("Segoe UI", 10, "bold"), borderwidth=0)
+        style.configure(
+            "TButton",
+            padding=(12, 10),
+            font=self._fonts.get("button", button_font),
+            borderwidth=0,
+        )
         style.map("TButton", relief=[("pressed", "sunken"), ("active", "raised")])
 
         style.configure("Accent.TButton", background=accent, foreground="#ffffff")
