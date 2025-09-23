@@ -307,3 +307,50 @@ def test_format_device_table_ffmpeg_empty_listing(monkeypatch) -> None:
     message = devices.format_device_table()
 
     assert "No FFmpeg audio input devices were reported." in message
+
+
+def test_recommended_ffmpeg_device_spec_prefers_alternative_name() -> None:
+    """Alternative DirectShow identifiers should be used when available."""
+
+    device = devices.FFmpegDevice(
+        index=1,
+        name="Microphone (Realtek(R) Audio)",
+        input_format="dshow",
+        details="@device_cm_{123ABC}",
+    )
+
+    spec = devices.recommended_ffmpeg_device_spec(device)
+
+    assert spec == 'dshow:audio="@device_cm_{123ABC}"'
+
+
+def test_recommended_ffmpeg_device_spec_quotes_primary_name() -> None:
+    """DirectShow devices without alternative names should quote the display name."""
+
+    device = devices.FFmpegDevice(
+        index=0,
+        name="Stereo Mix (Realtek(R) Audio)",
+        input_format="dshow",
+    )
+
+    spec = devices.recommended_ffmpeg_device_spec(device)
+
+    assert spec == 'dshow:audio="Stereo Mix (Realtek(R) Audio)"'
+
+
+def test_recommended_ffmpeg_device_spec_handles_other_backends() -> None:
+    """macOS and PulseAudio devices should produce usable specifications."""
+
+    avfoundation = devices.FFmpegDevice(index=3, name="USB Audio", input_format="avfoundation")
+    pulse = devices.FFmpegDevice(
+        index=1,
+        name="Built-in Audio Analog Stereo",
+        input_format="pulse",
+        details="alsa_input.pci-0000_00_1b.0.analog-stereo",
+    )
+
+    assert devices.recommended_ffmpeg_device_spec(avfoundation) == "avfoundation:3"
+    assert (
+        devices.recommended_ffmpeg_device_spec(pulse)
+        == "pulse:alsa_input.pci-0000_00_1b.0.analog-stereo"
+    )
