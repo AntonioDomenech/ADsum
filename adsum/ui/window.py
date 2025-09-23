@@ -1113,8 +1113,8 @@ class RecordingWindowUI:
 
         if not devices:
             message = (
-                "No audio input devices were detected. Install optional audio support with "
-                "`pip install adsum[audio]` and ensure audio hardware is accessible."
+                "No audio input devices were detected by the legacy probe. Provide "
+                "an FFmpeg capture specification manually when prompted."
             )
             self._info("No audio input devices were detected before starting the session.")
             return [], message

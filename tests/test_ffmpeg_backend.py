@@ -58,7 +58,7 @@ def test_parse_ffmpeg_device_guesses_windows_index(monkeypatch) -> None:
     monkeypatch.setattr(ffmpeg_backend, "_detect_platform", lambda: "windows")
     monkeypatch.setattr(
         ffmpeg_backend,
-        "_lookup_sounddevice_device_name",
+        "_lookup_ffmpeg_device_name",
         lambda index: "USB Microphone" if index == 2 else None,
     )
 

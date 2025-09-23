@@ -30,46 +30,6 @@ class _Missing:
 
 
 _MISSING = _Missing()
-
-
-def _create_sounddevice_capture(
-    request: "CaptureRequest",
-    *,
-    info: Optional[CaptureInfo] = None,
-    device_override: Optional[int | str | _Missing] = _MISSING,
-) -> Optional[AudioCapture]:
-    """Return a sounddevice capture instance for the provided request."""
-
-    if device_override is _MISSING and _is_disabled_device(request.device):
-        return None
-
-    device = (
-        _parse_device(request.device)
-        if device_override is _MISSING
-        else device_override
-    )
-
-    try:
-        from .sounddevice_backend import SoundDeviceCapture
-    except ImportError as exc:  # pragma: no cover - optional dependency
-        raise CaptureConfigurationError(
-            "sounddevice dependency is required for audio capture"
-        ) from exc
-
-    capture_info = info or CaptureInfo(
-        name=request.channel,
-        sample_rate=request.sample_rate,
-        channels=request.channels,
-        device="default" if device is None else str(device),
-    )
-    capture_info.device = "default" if device is None else str(device)
-
-    try:
-        return SoundDeviceCapture(info=capture_info, device=device)
-    except CaptureError as exc:
-        raise CaptureConfigurationError(str(exc)) from exc
-
-
 class CaptureConfigurationError(RuntimeError):
     """Raised when a capture stream cannot be configured."""
 
@@ -102,6 +62,9 @@ def create_capture(request: CaptureRequest) -> Optional[AudioCapture]:
 
     settings = get_settings()
     backend = (request.backend or settings.audio_backend or "").strip().lower()
+
+    if _is_disabled_device(request.device):
+        return None
 
     if backend in {"", "none"}:
         return None
@@ -161,14 +124,6 @@ def create_capture(request: CaptureRequest) -> Optional[AudioCapture]:
                 settings.ffmpeg_binary,
                 search_path,
             )
-            LOGGER.info(
-                "FFmpeg binary '%s' is unavailable; attempting sounddevice fallback for %s",
-                settings.ffmpeg_binary,
-                request.channel,
-            )
-            fallback = _create_sounddevice_capture(request, info=capture_info, device_override=None)
-            if fallback is not None:
-                return fallback
             raise CaptureConfigurationError(str(error)) from error
 
         try:
@@ -179,30 +134,13 @@ def create_capture(request: CaptureRequest) -> Optional[AudioCapture]:
                 chunk_frames=chunk_frames,
             )
         except FFmpegBinaryNotFoundError as exc:
-            LOGGER.info(
-                "FFmpeg binary '%s' disappeared before start; falling back to sounddevice for %s",
-                settings.ffmpeg_binary,
-                request.channel,
-            )
-            try:
-                fallback = _create_sounddevice_capture(request, info=capture_info, device_override=None)
-            except CaptureConfigurationError as fallback_error:
-                raise CaptureConfigurationError(
-                    f"{exc}. Additionally, automatic fallback to sounddevice failed: {fallback_error}"
-                ) from exc
-            if fallback is not None:
-                return fallback
             raise CaptureConfigurationError(str(exc)) from exc
         except CaptureError as exc:
             raise CaptureConfigurationError(str(exc)) from exc
 
-    if backend == "sounddevice":
-        capture = _create_sounddevice_capture(request)
-        if capture is None:
-            return None
-        return capture
-
-    raise CaptureConfigurationError(f"Unknown audio backend: {backend}")
+    raise CaptureConfigurationError(
+        f"Unknown audio backend: {backend}. Only 'ffmpeg' is supported."
+    )
 
 
 __all__ = [
