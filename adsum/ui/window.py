@@ -37,10 +37,13 @@ from ..data.models import TranscriptResult
 from ..core.audio.base import AudioCapture, CaptureError
 from ..core.audio.devices import (
     DeviceInfo,
+    FFmpegDevice,
     FFmpegDeviceEnumerationError,
     format_device_table,
     format_ffmpeg_error_message,
+    list_ffmpeg_devices,
     list_input_devices,
+    recommended_ffmpeg_device_spec,
 )
 from ..core.audio.factory import (
     CaptureConfigurationError,
@@ -1082,6 +1085,20 @@ class RecordingWindowUI:
             message = f"Unable to enumerate FFmpeg audio devices: {exc}"
             return format_ffmpeg_error_message(self._settings.ffmpeg_binary, message)
 
+    def _load_ffmpeg_devices_for_options(self) -> List[FFmpegDevice]:
+        try:
+            return list_ffmpeg_devices()
+        except FFmpegBinaryNotFoundError as exc:
+            LOGGER.warning(
+                "FFmpeg binary unavailable while building device options: %s", exc
+            )
+        except FFmpegDeviceEnumerationError as exc:
+            LOGGER.warning(
+                "FFmpeg device enumeration failed while building device options: %s",
+                exc,
+            )
+        return []
+
     def _auto_detect_working_devices(self) -> Tuple[List[DeviceInfo], str]:
         backend = (self._settings.audio_backend or "").strip().lower()
 
@@ -1212,7 +1229,12 @@ class RecordingWindowUI:
             devices = list_input_devices()
         else:
             devices = list(available_devices)
-        option_map = self._build_device_option_map(devices)
+
+        ffmpeg_devices: List[FFmpegDevice] = []
+        if ffmpeg_backend_active:
+            ffmpeg_devices = self._load_ffmpeg_devices_for_options()
+
+        option_map = self._build_device_option_map(devices, ffmpeg_devices)
         option_labels = list(option_map.keys())
         allowed_values = set(option_map.values())
 
@@ -1269,7 +1291,10 @@ class RecordingWindowUI:
         transcription_var = tk.StringVar(value=(current_transcription or "none"))
         notes_var = tk.StringVar(value=(current_notes or "none"))
 
-        combo_state = "readonly" if available_devices is not None else "normal"
+        if ffmpeg_backend_active:
+            combo_state = "normal"
+        else:
+            combo_state = "readonly" if available_devices is not None else "normal"
 
         ttk.Label(main, text="Microphone input", style="CardTitle.TLabel").grid(
             row=1, column=0, sticky="w"
@@ -1410,7 +1435,9 @@ class RecordingWindowUI:
         return mic_value, system_value, bool(mix_var.get()), transcription_value, notes_value
 
     def _build_device_option_map(
-        self, devices: Optional[Iterable[DeviceInfo]]
+        self,
+        devices: Optional[Iterable[DeviceInfo]],
+        ffmpeg_devices: Optional[Iterable[FFmpegDevice]] = None,
     ) -> Dict[str, Optional[str]]:
         options: Dict[str, Optional[str]] = {
             "Use system default": None,
@@ -1421,9 +1448,38 @@ class RecordingWindowUI:
             label = f"[{device.id}] {device.name}"
             if device.is_loopback:
                 label += " (loopback)"
-            options[label] = str(device.id)
+            value = str(device.id)
+            normalized = self._normalize_device_value(value)
+            options[label] = normalized if normalized is not None else value
+
+        for device in ffmpeg_devices or []:
+            spec = recommended_ffmpeg_device_spec(device)
+            if not spec:
+                continue
+            label = self._format_ffmpeg_option_label(device)
+            normalized = self._normalize_device_value(spec)
+            options[label] = normalized if normalized is not None else spec
 
         return options
+
+    def _format_ffmpeg_option_label(self, device: FFmpegDevice) -> str:
+        base_name = device.name or device.details or "Unnamed device"
+        label = f"[{device.index}] {base_name}"
+
+        descriptors: List[str] = []
+        if device.input_format:
+            descriptors.append(device.input_format)
+        if device.channels:
+            descriptors.append(f"{device.channels}ch")
+        if device.sample_rate:
+            descriptors.append(f"{device.sample_rate} Hz")
+        if device.details and device.details not in base_name:
+            descriptors.append(device.details)
+
+        if descriptors:
+            label = f"{label} — {', '.join(descriptors)}"
+
+        return label
 
     def _device_display_for_value(
         self, value: Optional[str], options: Dict[str, Optional[str]]

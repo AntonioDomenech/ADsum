@@ -39,6 +39,54 @@ class FFmpegDevice:
     details: Optional[str] = None
 
 
+def _quote_dshow_value(value: str) -> str:
+    """Return a DirectShow-friendly quoted value."""
+
+    trimmed = value.strip()
+    if trimmed.startswith('"') and trimmed.endswith('"') and len(trimmed) >= 2:
+        trimmed = trimmed[1:-1]
+    escaped = trimmed.replace('"', '\\"')
+    return f'"{escaped}"'
+
+
+def recommended_ffmpeg_device_spec(device: FFmpegDevice) -> Optional[str]:
+    """Return a suggested FFmpeg capture specification for the given device."""
+
+    fmt = (device.input_format or "").strip().lower()
+    if not fmt:
+        return None
+
+    if fmt == "dshow":
+        alt = (device.details or "").strip()
+        if alt:
+            # Include the audio= prefix when omitted in alternative identifiers.
+            if alt.lower().startswith("audio="):
+                _, _, target_value = alt.partition("=")
+            else:
+                target_value = alt
+            quoted = _quote_dshow_value(target_value)
+            return f"dshow:audio={quoted}"
+        if device.name:
+            quoted = _quote_dshow_value(device.name)
+            return f"dshow:audio={quoted}"
+        return None
+
+    if fmt == "avfoundation":
+        if device.index is not None:
+            return f"avfoundation:{device.index}"
+        return None
+
+    if fmt == "pulse":
+        target = (device.details or device.name or "").strip()
+        if not target:
+            return None
+        return f"pulse:{target}"
+
+    if device.name:
+        return f"{fmt}:{device.name}"
+    return None
+
+
 class FFmpegDeviceEnumerationError(RuntimeError):
     """Raised when FFmpeg cannot enumerate available devices."""
 
@@ -437,5 +485,6 @@ __all__ = [
     "list_ffmpeg_devices",
     "format_device_table",
     "format_ffmpeg_error_message",
+    "recommended_ffmpeg_device_spec",
 ]
 
