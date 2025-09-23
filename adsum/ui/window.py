@@ -129,38 +129,210 @@ class RecordingWindowUI:
 
         self._root = tk.Tk()
         self._root.title("ADsum Recorder")
+        self._root.minsize(820, 640)
+        self._root.geometry("920x720")
         self._root.protocol("WM_DELETE_WINDOW", self._on_close)
 
         self._status_var = tk.StringVar(value="No active recording.")
 
-        status_label = ttk.Label(self._root, textvariable=self._status_var, anchor="w")
-        status_label.pack(fill="x", padx=12, pady=(12, 6))
+        self._configure_theme()
 
-        button_frame = ttk.Frame(self._root)
-        button_frame.pack(fill="x", padx=12)
+        self._root.columnconfigure(0, weight=1)
+        self._root.rowconfigure(0, weight=1)
 
-        self._add_button(button_frame, "Start", self._start_recording)
-        self._add_button(button_frame, "Pause", self._pause_recording)
-        self._add_button(button_frame, "Resume", self._resume_recording)
-        self._add_button(button_frame, "Test", self._test_devices)
-        self._add_button(button_frame, "Stop", self._stop_recording)
-        self._add_button(button_frame, "Notes", self._show_notes)
-        self._add_button(button_frame, "Sessions", self._list_sessions)
-        self._add_button(button_frame, "Devices", self._show_devices)
-        self._add_button(button_frame, "Environment", self._configure_environment)
-        self._add_button(button_frame, "Quit", self._on_close)
+        main = ttk.Frame(self._root, padding=(24, 24, 24, 28), style="Main.TFrame")
+        main.grid(row=0, column=0, sticky="nsew")
+        main.columnconfigure(0, weight=1)
+        main.rowconfigure(4, weight=1)
+        main.rowconfigure(5, weight=1)
 
-        transcript_label = ttk.Label(self._root, text="Live transcription:")
-        transcript_label.pack(anchor="w", padx=12, pady=(12, 0))
+        header = ttk.Label(main, text="ADsum Recorder", style="Header.TLabel")
+        header.grid(row=0, column=0, sticky="w")
 
-        self._transcript_widget = ScrolledText(self._root, height=8, width=80, state="disabled")
-        self._transcript_widget.pack(fill="both", expand=False, padx=12, pady=(0, 12))
+        subtitle = ttk.Label(
+            main,
+            text="Capture crystal-clear sessions with intuitive controls and live transcription.",
+            style="Subheader.TLabel",
+            wraplength=720,
+        )
+        subtitle.grid(row=1, column=0, sticky="w", pady=(4, 20))
 
-        log_label = ttk.Label(self._root, text="Activity log:")
-        log_label.pack(anchor="w", padx=12, pady=(12, 0))
+        status_card = ttk.Frame(main, padding=(16, 12), style="Card.TFrame")
+        status_card.grid(row=2, column=0, sticky="ew", pady=(0, 20))
+        status_card.columnconfigure(0, weight=1)
 
-        self._log_widget = ScrolledText(self._root, height=12, width=80, state="disabled")
-        self._log_widget.pack(fill="both", expand=True, padx=12, pady=(0, 12))
+        ttk.Label(status_card, text="Session status", style="CardTitle.TLabel").grid(
+            row=0, column=0, sticky="w"
+        )
+        ttk.Separator(status_card).grid(row=1, column=0, sticky="ew", pady=(8, 10))
+
+        status_label = ttk.Label(status_card, textvariable=self._status_var, style="StatusValue.TLabel")
+        status_label.grid(row=2, column=0, sticky="w")
+
+        ttk.Label(
+            status_card,
+            text="Use Start to begin a session. Pause and Resume keep recording on your schedule.",
+            style="Body.TLabel",
+            wraplength=700,
+        ).grid(row=3, column=0, sticky="w", pady=(6, 0))
+
+        controls_card = ttk.Frame(main, padding=(16, 12), style="Card.TFrame")
+        controls_card.grid(row=3, column=0, sticky="ew", pady=(0, 20))
+        controls_card.columnconfigure((0, 1, 2), weight=1)
+
+        ttk.Label(controls_card, text="Quick controls", style="CardTitle.TLabel").grid(
+            row=0, column=0, columnspan=3, sticky="w"
+        )
+        ttk.Separator(controls_card).grid(row=1, column=0, columnspan=3, sticky="ew", pady=(8, 12))
+
+        self._add_button(
+            controls_card,
+            "Start",
+            self._start_recording,
+            row=2,
+            column=0,
+            style="Accent.TButton",
+        )
+        self._add_button(
+            controls_card,
+            "Pause",
+            self._pause_recording,
+            row=2,
+            column=1,
+            style="Secondary.TButton",
+        )
+        self._add_button(
+            controls_card,
+            "Resume",
+            self._resume_recording,
+            row=2,
+            column=2,
+            style="Secondary.TButton",
+        )
+        self._add_button(
+            controls_card,
+            "Stop",
+            self._stop_recording,
+            row=3,
+            column=0,
+            style="Danger.TButton",
+        )
+        self._add_button(
+            controls_card,
+            "Test",
+            self._test_devices,
+            row=3,
+            column=1,
+            style="Tertiary.TButton",
+        )
+        self._add_button(
+            controls_card,
+            "Notes",
+            self._show_notes,
+            row=3,
+            column=2,
+            style="Tertiary.TButton",
+        )
+        self._add_button(
+            controls_card,
+            "Sessions",
+            self._list_sessions,
+            row=4,
+            column=0,
+            style="Tertiary.TButton",
+        )
+        self._add_button(
+            controls_card,
+            "Devices",
+            self._show_devices,
+            row=4,
+            column=1,
+            style="Tertiary.TButton",
+        )
+        self._add_button(
+            controls_card,
+            "Environment",
+            self._configure_environment,
+            row=4,
+            column=2,
+            style="Tertiary.TButton",
+        )
+        self._add_button(
+            controls_card,
+            "Quit",
+            self._on_close,
+            row=5,
+            column=0,
+            style="Danger.TButton",
+            columnspan=3,
+        )
+
+        ttk.Label(
+            controls_card,
+            text="Tools give you fast access to previous sessions, devices and environment settings.",
+            style="Caption.TLabel",
+            wraplength=700,
+        ).grid(row=6, column=0, columnspan=3, sticky="w", pady=(12, 0))
+
+        transcript_card = ttk.Frame(main, padding=(16, 12), style="Card.TFrame")
+        transcript_card.grid(row=4, column=0, sticky="nsew", pady=(0, 20))
+        transcript_card.columnconfigure(0, weight=1)
+        transcript_card.rowconfigure(2, weight=1)
+
+        ttk.Label(transcript_card, text="Live transcription", style="CardTitle.TLabel").grid(
+            row=0, column=0, sticky="w"
+        )
+        ttk.Separator(transcript_card).grid(row=1, column=0, sticky="ew", pady=(8, 10))
+
+        self._transcript_widget = ScrolledText(
+            transcript_card,
+            height=8,
+            width=80,
+            state="disabled",
+            wrap="word",
+            borderwidth=0,
+            highlightthickness=0,
+        )
+        self._transcript_widget.grid(row=2, column=0, sticky="nsew")
+        self._transcript_widget.configure(
+            font=("Segoe UI", 11),
+            spacing1=4,
+            spacing3=6,
+            padx=12,
+            pady=12,
+            background="#ffffff",
+            insertbackground="#0f172a",
+        )
+
+        log_card = ttk.Frame(main, padding=(16, 12), style="Card.TFrame")
+        log_card.grid(row=5, column=0, sticky="nsew")
+        log_card.columnconfigure(0, weight=1)
+        log_card.rowconfigure(2, weight=1)
+
+        ttk.Label(log_card, text="Activity log", style="CardTitle.TLabel").grid(
+            row=0, column=0, sticky="w"
+        )
+        ttk.Separator(log_card).grid(row=1, column=0, sticky="ew", pady=(8, 10))
+
+        self._log_widget = ScrolledText(
+            log_card,
+            height=12,
+            width=80,
+            state="disabled",
+            wrap="word",
+            borderwidth=0,
+            highlightthickness=0,
+        )
+        self._log_widget.grid(row=2, column=0, sticky="nsew")
+        self._log_widget.configure(
+            font=("Segoe UI", 10),
+            spacing1=2,
+            spacing3=4,
+            padx=12,
+            pady=12,
+            background="#ffffff",
+            insertbackground="#0f172a",
+        )
 
         self._info("Launching ADsum window UI. Close the window to exit.")
         self._flush_messages()
@@ -178,14 +350,101 @@ class RecordingWindowUI:
     # ------------------------------------------------------------------
     # UI plumbing
     # ------------------------------------------------------------------
-    def _add_button(self, frame: "ttk.Frame", label: str, command) -> None:
-        button = ttk.Button(frame, text=label, command=command, width=12)
-        button.pack(side="left", padx=3, pady=3)
+    def _add_button(
+        self,
+        frame: "ttk.Frame",
+        label: str,
+        command,
+        *,
+        row: int,
+        column: int,
+        style: str,
+        columnspan: int = 1,
+    ) -> None:
+        button = ttk.Button(frame, text=label, command=command, style=style)
+        button.grid(
+            row=row,
+            column=column,
+            columnspan=columnspan,
+            sticky="ew",
+            padx=6,
+            pady=6,
+        )
 
     def _schedule_refresh(self) -> None:
         if not self._root:
             return
         self._on_periodic_update()
+
+    def _configure_theme(self) -> None:
+        if not self._root:
+            return
+
+        base_bg = "#f5f7fa"
+        card_bg = "#ffffff"
+        accent = "#2563eb"
+        accent_active = "#1d4ed8"
+        accent_disabled = "#93c5fd"
+        secondary_bg = "#e2e8f0"
+        secondary_active = "#cbd5f5"
+        tertiary_bg = "#f1f5f9"
+        danger = "#ef4444"
+        danger_active = "#dc2626"
+        danger_disabled = "#fecaca"
+
+        style = ttk.Style()
+        try:
+            style.theme_use("clam")
+        except tk.TclError:  # pragma: no cover - depends on available Tk themes
+            pass
+
+        self._root.configure(background=base_bg)
+        self._root.option_add("*Font", "Segoe UI 10")
+
+        style.configure("Main.TFrame", background=base_bg)
+        style.configure("Card.TFrame", background=card_bg, relief="flat", borderwidth=0)
+        style.configure("Header.TLabel", background=base_bg, foreground="#0f172a", font=("Segoe UI", 22, "bold"))
+        style.configure("Subheader.TLabel", background=base_bg, foreground="#475569", font=("Segoe UI", 11))
+        style.configure("CardTitle.TLabel", background=card_bg, foreground="#0f172a", font=("Segoe UI", 12, "bold"))
+        style.configure("Body.TLabel", background=card_bg, foreground="#475569", font=("Segoe UI", 10))
+        style.configure("Caption.TLabel", background=card_bg, foreground="#64748b", font=("Segoe UI", 9))
+        style.configure(
+            "StatusValue.TLabel",
+            background=card_bg,
+            foreground=accent,
+            font=("Segoe UI", 12, "bold"),
+        )
+
+        style.configure("TButton", padding=(12, 10), font=("Segoe UI", 10, "bold"), borderwidth=0)
+        style.map("TButton", relief=[("pressed", "sunken"), ("active", "raised")])
+
+        style.configure("Accent.TButton", background=accent, foreground="#ffffff")
+        style.map(
+            "Accent.TButton",
+            background=[("active", accent_active), ("disabled", accent_disabled)],
+            foreground=[("disabled", "#e2e8f0")],
+        )
+
+        style.configure("Secondary.TButton", background=secondary_bg, foreground="#0f172a")
+        style.map(
+            "Secondary.TButton",
+            background=[("active", secondary_active)],
+            foreground=[("disabled", "#94a3b8")],
+        )
+
+        style.configure("Tertiary.TButton", background=tertiary_bg, foreground="#0f172a")
+        style.map(
+            "Tertiary.TButton",
+            background=[("active", secondary_bg)],
+            foreground=[("disabled", "#94a3b8")],
+        )
+
+        style.configure("Danger.TButton", background=danger, foreground="#ffffff")
+        style.map(
+            "Danger.TButton",
+            background=[("active", danger_active), ("disabled", danger_disabled)],
+            foreground=[("disabled", "#fee2e2")],
+        )
 
     def _on_periodic_update(self) -> None:
         if not self._root or not self._root.winfo_exists():
