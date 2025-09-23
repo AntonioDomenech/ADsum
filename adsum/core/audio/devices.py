@@ -107,6 +107,11 @@ def _format_ffmpeg_instructions(binary: str) -> str:
         "Additional FFmpeg arguments can be provided with args= or opt_/flag_ parameters.",
         "Set ADSUM_AUDIO_BACKEND=sounddevice if you prefer the legacy PortAudio backend.",
         f"Using FFmpeg binary: {binary}",
+        "",
+        "Discover devices with:",
+        f"  Windows: {binary} -hide_banner -list_devices true -f dshow -i dummy",
+        f"  macOS:   {binary} -hide_banner -list_devices true -f avfoundation -i \"\"",
+        f"  Linux:   {binary} -hide_banner -sources pulse",
     ]
     return "\n".join(message)
 
