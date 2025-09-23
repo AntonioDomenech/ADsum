@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import contextlib
 import inspect
+import numbers
 import queue
+from collections.abc import Mapping, Sequence
 from typing import Optional
 
 import numpy as np
@@ -254,15 +256,111 @@ class SoundDeviceCapture(AudioCapture):
             return self._device_info
 
         try:  # pragma: no cover - depends on runtime availability
-            info = self._sd.query_devices(self._device)
+            try:
+                info = self._sd.query_devices(self._device, kind="input")
+            except TypeError:
+                info = self._sd.query_devices(self._device)
         except Exception as exc:  # pragma: no cover - depends on runtime availability
             LOGGER.debug("Failed to query device info for %s: %s", self._device, exc)
             self._device_info = None
             return None
 
-        self._device_info = info
-        self._configure_loopback(info)
+        info_dict = self._coerce_device_info(info)
+        if info_dict is None and isinstance(info, Sequence) and not isinstance(info, (bytes, str)):
+            info_dict = self._select_device_from_list(info)
+
+        if info_dict is None:
+            LOGGER.debug(
+                "Unable to interpret device info for %s (type %s)",
+                self._device,
+                type(info).__name__,
+            )
+            self._device_info = None
+            return None
+
+        self._device_info = info_dict
+        self._configure_loopback(info_dict)
         return self._device_info
+
+    def _coerce_device_info(self, info) -> Optional[dict]:
+        if info is None:
+            return None
+        if isinstance(info, Mapping):
+            return dict(info)
+        if hasattr(info, "_asdict"):
+            try:
+                return dict(info._asdict())
+            except Exception:  # pragma: no cover - defensive
+                return None
+        if hasattr(info, "__dict__"):
+            data = {key: value for key, value in vars(info).items() if not key.startswith("_")}
+            return data or None
+        return None
+
+    def _select_device_from_list(self, devices: Sequence) -> Optional[dict]:
+        infos = [self._coerce_device_info(entry) for entry in devices]
+        infos = [info for info in infos if info]
+        if not infos:
+            return None
+
+        device_spec = self._device
+
+        if isinstance(device_spec, numbers.Integral) and not isinstance(device_spec, bool):
+            index = int(device_spec)
+            for info in infos:
+                if int(info.get("index", -1)) == index:
+                    return info
+            if 0 <= index < len(infos):
+                return infos[index]
+
+        if isinstance(device_spec, str):
+            try:
+                parsed_index = int(device_spec)
+            except (TypeError, ValueError):
+                parsed_index = None
+            if parsed_index is not None:
+                for info in infos:
+                    if int(info.get("index", -1)) == parsed_index:
+                        return info
+                if 0 <= parsed_index < len(infos):
+                    return infos[parsed_index]
+
+            lowered = device_spec.lower()
+            for info in infos:
+                name = str(info.get("name", ""))
+                if name.lower() == lowered:
+                    return info
+            for info in infos:
+                name = str(info.get("name", ""))
+                if lowered in name.lower():
+                    return info
+
+        try:
+            default_index = self._sd.default.device["input"]
+        except Exception:  # pragma: no cover - depends on runtime availability
+            default_index = None
+        else:
+            try:
+                default_index = int(default_index)
+            except (TypeError, ValueError):
+                default_index = None
+
+        if default_index is not None:
+            for info in infos:
+                if int(info.get("index", -1)) == default_index:
+                    return info
+            if 0 <= default_index < len(infos):
+                return infos[default_index]
+
+        for info in infos:
+            try:
+                max_input = int(info.get("max_input_channels") or 0)
+            except (TypeError, ValueError):
+                max_input = 0
+            if max_input > 0:
+                return info
+
+        return infos[0]
 
     def _configure_loopback(self, info: dict) -> None:
         if self._loopback_channels:
