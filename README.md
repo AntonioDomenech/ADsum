@@ -82,6 +82,10 @@ Environment variables customise behaviour via `pydantic` settings (prefix `ADSUM
 - `ADSUM_CHUNK_SECONDS`: Preferred chunk duration when streaming (default `1.0`).
 - `ADSUM_AUDIO_BACKEND`: Audio engine to use (`ffmpeg` by default, `sounddevice` for the legacy backend).
 - `ADSUM_FFMPEG_BINARY`: Override FFmpeg executable path when the binary is not available on PATH.
+  On Windows, ADsum also checks common installation folders such as `C:\\ffmpeg\\bin` and
+  `C:\\Program Files\\FFmpeg\\bin`. If FFmpeg still cannot be found, download a build from
+  [ffmpeg.org](https://ffmpeg.org/download.html) and either add its `bin` directory to `PATH` or
+  point `ADSUM_FFMPEG_BINARY` directly at the `ffmpeg.exe` file.
 - `ADSUM_DEFAULT_MIC_DEVICE`: Preferred microphone device identifier remembered between sessions.
 - `ADSUM_DEFAULT_SYSTEM_DEVICE`: Preferred system audio device identifier remembered between sessions.
 - `ADSUM_OPENAI_TRANSCRIPTION_MODEL`: Model used for OpenAI transcription.
