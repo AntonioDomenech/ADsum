@@ -9,6 +9,7 @@ import time
 from collections import deque
 from dataclasses import dataclass
 from typing import Any, Deque, Dict, Iterable, Optional, Set
+from urllib.parse import urlsplit
 
 try:  # pragma: no cover - import guard for optional tkinter dependency
     import tkinter as tk
@@ -32,7 +33,7 @@ from ..config import (
     update_environment_setting,
 )
 from ..data.models import TranscriptResult
-from ..core.audio.base import AudioCapture
+from ..core.audio.base import AudioCapture, CaptureError
 from ..core.audio.devices import DeviceInfo, format_device_table, list_input_devices
 from ..core.audio.factory import (
     CaptureConfigurationError,
@@ -1009,7 +1010,20 @@ class RecordingWindowUI:
         main = ttk.Frame(window, padding=(20, 16))
         main.grid(row=0, column=0, sticky="nsew")
         main.columnconfigure(1, weight=1)
-        main.rowconfigure(6, weight=1)
+        ffmpeg_backend_active = (
+            (self._settings.audio_backend or "").strip().lower() == "ffmpeg"
+        )
+        preview_text: Optional[ScrolledText] = None
+
+        preview_row = 6 if ffmpeg_backend_active else None
+        device_row = 7 if ffmpeg_backend_active else 6
+        button_row = device_row + 1
+
+        rows_to_expand = [device_row]
+        if preview_row is not None:
+            rows_to_expand.insert(0, preview_row)
+        for row_index in rows_to_expand:
+            main.rowconfigure(row_index, weight=1)
 
         ttk.Label(
             main,
@@ -1078,8 +1092,23 @@ class RecordingWindowUI:
             state="normal",
         ).grid(row=5, column=1, sticky="w", padx=(12, 0), pady=(8, 0))
 
+        if ffmpeg_backend_active and preview_row is not None:
+            preview_frame = ttk.LabelFrame(
+                main, text="FFmpeg capture preview", padding=(12, 10)
+            )
+            preview_frame.grid(
+                row=preview_row, column=0, columnspan=2, sticky="nsew", pady=(16, 0)
+            )
+            preview_frame.columnconfigure(0, weight=1)
+
+            preview_text = ScrolledText(preview_frame, height=10, width=70)
+            preview_text.configure(state="disabled")
+            preview_text.grid(row=0, column=0, sticky="nsew")
+
         device_frame = ttk.LabelFrame(main, text="Detected devices", padding=(12, 10))
-        device_frame.grid(row=6, column=0, columnspan=2, sticky="nsew", pady=(16, 0))
+        device_frame.grid(
+            row=device_row, column=0, columnspan=2, sticky="nsew", pady=(16, 0)
+        )
         device_frame.columnconfigure(0, weight=1)
 
         device_text = ScrolledText(device_frame, height=8, width=70)
@@ -1087,8 +1116,36 @@ class RecordingWindowUI:
         device_text.configure(state="disabled")
         device_text.grid(row=0, column=0, sticky="nsew")
 
+        if ffmpeg_backend_active and preview_text is not None:
+
+            def _refresh_ffmpeg_preview() -> None:
+                mic_value_preview = self._resolve_device_selection(
+                    mic_var.get(), option_map
+                )
+                system_value_preview = self._resolve_device_selection(
+                    system_var.get(), option_map
+                )
+                preview = self._format_ffmpeg_preview(
+                    mic_value_preview, system_value_preview
+                )
+                if not preview:
+                    preview = (
+                        "Select or enter a device to preview the FFmpeg capture settings."
+                    )
+                preview_text.configure(state="normal")
+                preview_text.delete("1.0", "end")
+                preview_text.insert("1.0", preview)
+                preview_text.configure(state="disabled")
+
+            def _on_preview_change(*_: Any) -> None:
+                _refresh_ffmpeg_preview()
+
+            mic_var.trace_add("write", _on_preview_change)
+            system_var.trace_add("write", _on_preview_change)
+            _refresh_ffmpeg_preview()
+
         button_frame = ttk.Frame(main)
-        button_frame.grid(row=7, column=0, columnspan=2, sticky="e", pady=(16, 0))
+        button_frame.grid(row=button_row, column=0, columnspan=2, sticky="e", pady=(16, 0))
 
         confirmed = {"value": False}
 
@@ -1156,6 +1213,90 @@ class RecordingWindowUI:
         if choice in options:
             return options[choice]
         return choice
+
+    def _format_ffmpeg_preview(
+        self,
+        mic: Optional[str],
+        system: Optional[str],
+    ) -> str:
+        sections = [
+            self._describe_ffmpeg_channel("Microphone input", mic),
+            self._describe_ffmpeg_channel("System audio", system),
+        ]
+        content = "\n\n".join(section for section in sections if section).strip()
+        return content
+
+    def _describe_ffmpeg_channel(
+        self,
+        label: str,
+        device: Optional[str],
+    ) -> str:
+        normalized = self._normalize_device_value(device)
+        lines = [f"{label}:"]
+
+        if normalized is None:
+            lines.append("  Using system default input.")
+            return "\n".join(lines)
+
+        if normalized == DISABLED_DEVICE_SENTINEL:
+            lines.append("  Capture disabled for this channel.")
+            return "\n".join(lines)
+
+        original_value = normalized
+        lines.append(f"  Entered: {original_value}")
+
+        try:
+            from ..core.audio.ffmpeg_backend import parse_ffmpeg_device
+        except Exception as exc:  # pragma: no cover - import guard
+            LOGGER.debug("Unable to import FFmpeg parser for preview: %s", exc)
+            lines.append(
+                "  FFmpeg heuristics are unavailable. Ensure FFmpeg support is installed."
+            )
+            return "\n".join(lines)
+
+        try:
+            spec = parse_ffmpeg_device(
+                original_value,
+                default_sample_rate=self.sample_rate,
+                default_channels=self.channels,
+            )
+        except CaptureError as exc:
+            lines.append(f"  Error: {exc}")
+            return "\n".join(lines)
+
+        target = f"{spec.input_format}:{spec.input_target}"
+        original_split = urlsplit(original_value)
+        if not original_split.scheme:
+            lines.append(f"  Inferred target: {target}")
+        else:
+            lines.append(f"  Target: {target}")
+
+        query_parts = [
+            f"sample_rate={spec.sample_rate}",
+            f"channels={spec.channels}",
+            f"sample_fmt={spec.sample_format}",
+        ]
+        if spec.chunk_frames is not None:
+            query_parts.append(f"chunk_frames={spec.chunk_frames}")
+
+        normalized_spec = target
+        if query_parts:
+            normalized_spec = f"{target}?{'&'.join(query_parts)}"
+        lines.append(f"  Normalised spec: {normalized_spec}")
+        lines.append(
+            f"  Stream parameters: {spec.channels} channel(s) @ {spec.sample_rate} Hz ({spec.sample_format})"
+        )
+
+        if spec.args_before_input:
+            lines.append(
+                "  Extra input args: " + " ".join(spec.args_before_input)
+            )
+        if spec.args_after_input:
+            lines.append(
+                "  Extra output args: " + " ".join(spec.args_after_input)
+            )
+
+        return "\n".join(lines)
 
     def _format_device_display(self, value: Optional[str]) -> str:
         if value == DISABLED_DEVICE_SENTINEL:
