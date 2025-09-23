@@ -38,6 +38,38 @@ def test_parse_ffmpeg_device_rejects_unknown_option() -> None:
         )
 
 
+def test_parse_ffmpeg_device_guesses_linux_defaults(monkeypatch) -> None:
+    monkeypatch.setattr(ffmpeg_backend, "_detect_platform", lambda: "linux")
+
+    spec = parse_ffmpeg_device(
+        "default?channels=2",
+        default_sample_rate=16000,
+        default_channels=1,
+    )
+
+    assert spec.input_format == "pulse"
+    assert spec.input_target == "default"
+    assert spec.channels == 2
+
+
+def test_parse_ffmpeg_device_guesses_windows_index(monkeypatch) -> None:
+    monkeypatch.setattr(ffmpeg_backend, "_detect_platform", lambda: "windows")
+    monkeypatch.setattr(
+        ffmpeg_backend,
+        "_lookup_sounddevice_device_name",
+        lambda index: "USB Microphone" if index == 2 else None,
+    )
+
+    spec = parse_ffmpeg_device(
+        "2",
+        default_sample_rate=16000,
+        default_channels=1,
+    )
+
+    assert spec.input_format == "dshow"
+    assert spec.input_target == 'audio="USB Microphone"'
+
+
 class _FakeProcess:
     def __init__(self, stdout_bytes: bytes) -> None:
         self.stdout = io.BufferedReader(io.BytesIO(stdout_bytes))

@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import contextlib
 import io
+import os
 import queue
 import shlex
 import shutil
 import subprocess
+import sys
 import threading
 from dataclasses import dataclass
 from pathlib import Path
@@ -55,6 +57,92 @@ class FFmpegDeviceSpec:
     chunk_frames: Optional[int]
 
 
+def _detect_platform() -> str:
+    """Return a simplified platform identifier used for heuristics."""
+
+    if os.name == "nt":
+        return "windows"
+    if sys.platform == "darwin":
+        return "darwin"
+    if sys.platform.startswith("linux"):
+        return "linux"
+    return "unknown"
+
+
+def _lookup_sounddevice_device_name(index: int) -> Optional[str]:
+    """Return the sounddevice name for the given index when available."""
+
+    try:
+        from .devices import list_input_devices
+    except Exception:  # pragma: no cover - optional dependency or import error
+        return None
+
+    try:
+        devices = list_input_devices()
+    except Exception:  # pragma: no cover - runtime optional dependency errors
+        return None
+
+    for device in devices:
+        if device.id == index:
+            return device.name
+    return None
+
+
+def _quote_windows_device_name(name: str) -> str:
+    """Return a quoted DirectShow device name with escaped quotes."""
+
+    trimmed = name.strip()
+    if trimmed.startswith("\"") and trimmed.endswith("\"") and len(trimmed) >= 2:
+        trimmed = trimmed[1:-1]
+    escaped = trimmed.replace("\"", "\\\"")
+    return f'"{escaped}"'
+
+
+def _guess_ffmpeg_device_target(device: str) -> Optional[str]:
+    """Return a best-effort FFmpeg specification for targets lacking a scheme."""
+
+    platform = _detect_platform()
+    base = device.strip()
+    if not base:
+        return None
+
+    if platform == "windows":
+        target = base
+        if base.lower().startswith("audio="):
+            name = base[6:]
+            target = f"audio={_quote_windows_device_name(name)}"
+        else:
+            resolved = base
+            if base.isdigit():
+                lookup = _lookup_sounddevice_device_name(int(base))
+                if lookup:
+                    resolved = lookup
+            target = f"audio={_quote_windows_device_name(resolved)}"
+        return f"dshow:{target}"
+
+    if platform == "darwin":
+        if base.isdigit():
+            return f"avfoundation:{base}"
+        return None
+
+    if platform == "linux":
+        return f"pulse:{base}"
+
+    return None
+
+
+def _guess_ffmpeg_device_spec(device: str) -> Optional[str]:
+    """Return a device specification with scheme if one can be inferred."""
+
+    base, sep, query = device.partition("?")
+    target = _guess_ffmpeg_device_target(base)
+    if not target:
+        return None
+    if sep:
+        return f"{target}?{query}"
+    return target
+
+
 def parse_ffmpeg_device(
     device: str,
     *,
@@ -66,7 +154,18 @@ def parse_ffmpeg_device(
     if not device:
         raise CaptureError("FFmpeg backend requires a device specification")
 
-    split = urlsplit(device)
+    normalized_device = device.strip()
+    split = urlsplit(normalized_device)
+
+    if not split.scheme:
+        guessed = _guess_ffmpeg_device_spec(normalized_device)
+        if guessed:
+            LOGGER.debug(
+                "Normalised FFmpeg device specification '%s' -> '%s'", device, guessed
+            )
+            normalized_device = guessed
+            split = urlsplit(normalized_device)
+
     if not split.scheme:
         raise CaptureError(
             "FFmpeg device specification must start with an input format, "
