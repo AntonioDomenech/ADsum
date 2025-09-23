@@ -71,6 +71,19 @@ Additional FFmpeg flags can be added via query parameters. For instance `args=-t
 
 Use the "Configure environment" menu entry to inspect or update any `ADSUM_` variables directly from the UI. Changes are persisted to your `.env` file for future sessions.
 
+### Managing FFmpeg downloads
+
+Both the console and window interfaces call an internal helper named `ensure_ffmpeg_available`
+whenever FFmpeg cannot be found. If `ADSUM_FFMPEG_DOWNLOAD_URL` is set, the helper downloads a
+platform-specific archive (the `{platform}` placeholder expands to `windows`, `darwin`, or
+`linux`) into `<ADSUM_BASE_DIR>/cache/ffmpeg/<platform>`, extracts the binary, and records its
+location in `ADSUM_FFMPEG_BINARY`. You can opt-in to this behaviour from the prompts shown after a
+failed recording attempt, or configure it ahead of time via the environment menu.
+
+Prefer to manage FFmpeg manually? Simply leave `ADSUM_FFMPEG_DOWNLOAD_URL` unset. The same prompt
+lets you browse for the executable and stores the selection in your `.env` file, ensuring future
+sessions keep using your preferred installation.
+
 ## Configuration
 
 Environment variables customise behaviour via `pydantic` settings (prefix `ADSUM_`):
@@ -86,8 +99,13 @@ Environment variables customise behaviour via `pydantic` settings (prefix `ADSUM
   `C:\\Program Files\\FFmpeg\\bin`. If FFmpeg still cannot be found, download a build from
   [ffmpeg.org](https://ffmpeg.org/download.html) and either add its `bin` directory to `PATH` or
   point `ADSUM_FFMPEG_BINARY` directly at the `ffmpeg.exe` file. When ADsum cannot locate the
-  executable during a recording attempt, both interactive interfaces now offer to browse for the
-  correct binary and persist it to your `.env` file automatically.
+  executable during a recording attempt, both interactive interfaces now offer to download or
+  browse for the correct binary and persist it to your `.env` file automatically.
+- `ADSUM_FFMPEG_DOWNLOAD_URL`: Optional direct download link used by the automatic bootstrapper.
+  The URL may include a `{platform}` placeholder that resolves to `windows`, `darwin`, or `linux`.
+  When configured, ADsum caches the retrieved archive or binary under
+  `<ADSUM_BASE_DIR>/cache/ffmpeg/<platform>` and records the resulting executable path in
+  `ADSUM_FFMPEG_BINARY`. Leave this setting empty if you prefer to manage FFmpeg manually.
 - `ADSUM_DEFAULT_MIC_DEVICE`: Preferred microphone device identifier remembered between sessions.
 - `ADSUM_DEFAULT_SYSTEM_DEVICE`: Preferred system audio device identifier remembered between sessions.
 - `ADSUM_OPENAI_TRANSCRIPTION_MODEL`: Model used for OpenAI transcription.

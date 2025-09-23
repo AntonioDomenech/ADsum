@@ -10,18 +10,27 @@ import shlex
 import shutil
 import subprocess
 import sys
+import tarfile
+import tempfile
 import threading
+import zipfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, TYPE_CHECKING
+from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qsl, urlsplit
+from urllib.request import urlopen
 
 import numpy as np
 
 from .base import AudioCapture, CaptureError, CaptureInfo
+from ...config import get_settings
 from ...logging import get_logger
 
 LOGGER = get_logger(__name__)
+
+if TYPE_CHECKING:  # pragma: no cover - imported only for type checking
+    from ...config import Settings
 
 
 _OUTPUT_CODECS = {
@@ -307,7 +316,7 @@ class FFmpegCapture(AudioCapture):
         if self._process is not None:
             return
 
-        executable = _resolve_binary(self._binary)
+        executable = ensure_ffmpeg_available(self._binary)
         if executable is None:
             raise FFmpegBinaryNotFoundError(self._binary)
 
@@ -539,10 +548,207 @@ def _resolve_binary(binary: str) -> Optional[str]:
     return None
 
 
+def ensure_ffmpeg_available(binary: str, *, download_url: Optional[str] = None) -> Optional[str]:
+    """Resolve or download the FFmpeg executable.
+
+    If the binary cannot be located via :func:`_resolve_binary`, this helper attempts to
+    download a platform-specific build into ``<ADSUM_BASE_DIR>/cache/ffmpeg/<platform>``.
+    The download URL is resolved from ``download_url`` or ``ADSUM_FFMPEG_DOWNLOAD_URL`` and
+    may include a ``{platform}`` placeholder.
+    """
+
+    resolved = _resolve_binary(binary)
+    if resolved:
+        return resolved
+
+    try:
+        settings: Optional["Settings"] = get_settings()
+    except Exception:  # pragma: no cover - defensive fallback when settings misconfigured
+        settings = None
+
+    configured_url = download_url or os.environ.get("ADSUM_FFMPEG_DOWNLOAD_URL")
+    if not configured_url and settings is not None:
+        configured_url = settings.ffmpeg_download_url
+
+    if not configured_url:
+        LOGGER.info(
+            "FFmpeg binary '%s' was not found and ADSUM_FFMPEG_DOWNLOAD_URL is not configured.",
+            binary,
+        )
+        return None
+
+    platform = _detect_platform()
+    formatted_url = configured_url.format(platform=platform)
+    try:
+        binary_path = _download_ffmpeg_build(formatted_url, platform, settings)
+    except (HTTPError, URLError) as exc:
+        LOGGER.error("Failed to download FFmpeg from %s: %s", formatted_url, exc)
+        return None
+    except Exception:  # pragma: no cover - unexpected extraction or filesystem failures
+        LOGGER.exception("Unexpected error while preparing FFmpeg download from %s", formatted_url)
+        return None
+
+    if not binary_path:
+        LOGGER.error(
+            "Downloaded FFmpeg package from %s did not contain an ffmpeg executable.",
+            formatted_url,
+        )
+        return None
+
+    return str(binary_path)
+
+
+def _download_ffmpeg_build(
+    url: str,
+    platform: str,
+    settings: Optional["Settings"],
+) -> Optional[Path]:
+    cache_dir = _ffmpeg_cache_dir(platform, settings)
+
+    cached = _locate_ffmpeg_binary(cache_dir)
+    if cached:
+        LOGGER.debug("Using cached FFmpeg binary at %s", cached)
+        return cached
+
+    filename = Path(urlsplit(url).path).name or f"ffmpeg-{platform}"
+    download_target = cache_dir / filename
+
+    if not download_target.exists():
+        LOGGER.info("Downloading FFmpeg build for %s from %s", platform, url)
+        _stream_download(url, download_target)
+    else:
+        LOGGER.info("Reusing cached FFmpeg download at %s", download_target)
+
+    extracted = _extract_archive(download_target, cache_dir)
+    if not extracted:
+        binary_path = download_target
+        if binary_path.name.lower() not in {"ffmpeg", "ffmpeg.exe"}:
+            target_name = "ffmpeg.exe" if platform == "windows" else "ffmpeg"
+            destination = cache_dir / target_name
+            if destination.exists():
+                destination.unlink()
+            binary_path = download_target.replace(destination)
+        _ensure_executable(binary_path)
+        return binary_path
+
+    binary = _locate_ffmpeg_binary(cache_dir)
+    if binary:
+        _ensure_executable(binary)
+    return binary
+
+
+def _ffmpeg_cache_dir(platform: str, settings: Optional["Settings"]) -> Path:
+    base_dir: Optional[Path] = None
+    if settings is not None:
+        base_dir = Path(settings.base_dir)
+    elif os.environ.get("ADSUM_BASE_DIR"):
+        base_dir = Path(os.environ["ADSUM_BASE_DIR"])
+    else:
+        base_dir = Path("recordings")
+
+    base_dir = base_dir.expanduser()
+    cache_dir = base_dir / "cache" / "ffmpeg" / platform
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    return cache_dir
+
+
+def _stream_download(url: str, destination: Path) -> None:
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    with urlopen(url) as response:
+        status = getattr(response, "status", 200)
+        if status and status >= 400:
+            raise HTTPError(url, status, getattr(response, "reason", "HTTP error"), None, None)
+        with tempfile.NamedTemporaryFile(delete=False) as tmp_file:
+            shutil.copyfileobj(response, tmp_file)
+            tmp_path = Path(tmp_file.name)
+    try:
+        tmp_path.replace(destination)
+    finally:
+        with contextlib.suppress(FileNotFoundError):
+            tmp_path.unlink()
+
+
+def _extract_archive(archive: Path, destination: Path) -> bool:
+    if zipfile.is_zipfile(archive):
+        LOGGER.info("Extracting FFmpeg archive %s", archive)
+        _extract_zip(archive, destination)
+        return True
+    if tarfile.is_tarfile(archive):
+        LOGGER.info("Extracting FFmpeg archive %s", archive)
+        _extract_tar(archive, destination)
+        return True
+    return False
+
+
+def _extract_zip(archive: Path, destination: Path) -> None:
+    with zipfile.ZipFile(archive) as zip_file:
+        base = destination.resolve()
+        for member in zip_file.infolist():
+            target = (destination / member.filename).resolve()
+            if not _is_within_directory(base, target):
+                raise RuntimeError("Zip archive attempted to write outside the FFmpeg cache")
+        zip_file.extractall(destination)
+
+
+def _extract_tar(archive: Path, destination: Path) -> None:
+    with tarfile.open(archive, mode="r:*") as tar_file:
+        base = destination.resolve()
+        for member in tar_file.getmembers():
+            member_name = member.name or ""
+            target = (destination / member_name).resolve()
+            if not _is_within_directory(base, target):
+                raise RuntimeError("Tar archive attempted to write outside the FFmpeg cache")
+        tar_file.extractall(destination)
+
+
+def _is_within_directory(directory: Path, target: Path) -> bool:
+    try:
+        directory_resolved = directory.resolve()
+    except FileNotFoundError:  # pragma: no cover - directory should already exist
+        directory_resolved = directory
+    try:
+        target_resolved = target.resolve()
+    except FileNotFoundError:
+        target_resolved = target
+    return str(target_resolved).startswith(str(directory_resolved))
+
+
+def _locate_ffmpeg_binary(search_root: Path) -> Optional[Path]:
+    candidates: List[Path] = []
+    if not search_root.exists():
+        return None
+    for path in search_root.rglob("*"):
+        if not path.is_file():
+            continue
+        name = path.name.lower()
+        if name == "ffmpeg" or name == "ffmpeg.exe":
+            candidates.append(path)
+
+    if not candidates:
+        return None
+
+    def _sort_key(value: Path) -> tuple[int, int]:
+        suffix_penalty = 0
+        if os.name == "nt":
+            suffix_penalty = 0 if value.name.lower().endswith(".exe") else 1
+        return (suffix_penalty, len(value.parts))
+
+    candidates.sort(key=_sort_key)
+    return candidates[0]
+
+
+def _ensure_executable(path: Path) -> None:
+    if os.name != "nt":
+        mode = path.stat().st_mode
+        path.chmod(mode | 0o111)
+
+
+
 __all__ = [
     "FFmpegBinaryNotFoundError",
     "FFmpegCapture",
     "FFmpegDeviceSpec",
+    "ensure_ffmpeg_available",
     "parse_ffmpeg_device",
 ]
 
