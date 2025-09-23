@@ -32,7 +32,15 @@ from ..config import (
 from ..data.models import TranscriptResult
 from ..core.audio.base import AudioCapture
 from ..core.audio.devices import format_device_table
-from ..core.audio.factory import CaptureConfigurationError, CaptureRequest, create_capture
+from ..core.audio.factory import (
+    CaptureConfigurationError,
+    CaptureRequest,
+    DISABLED_DEVICE_SENTINEL,
+    create_capture,
+)
+
+
+DEVICE_DISABLE_KEYWORDS = {"skip", "none", "off", "disabled"}
 from ..core.pipeline.orchestrator import (
     RecordingControl,
     RecordingOrchestrator,
@@ -91,10 +99,10 @@ class RecordingWindowUI:
         self.channels = channels if channels is not None else self._settings.channels
         self.mix_down = mix_down
         self._default_name = default_name
-        self._default_mic = (
+        self._default_mic = self._normalize_device_value(
             default_mic if default_mic is not None else self._settings.default_mic_device
         )
-        self._default_system = (
+        self._default_system = self._normalize_device_value(
             default_system
             if default_system is not None
             else self._settings.default_system_device
@@ -575,8 +583,10 @@ class RecordingWindowUI:
 
             self._show_text_window("Available audio devices", format_device_table())
 
-            mic = self._prompt_device("Microphone", self._default_mic)
-            system = self._prompt_device("System", self._default_system)
+            mic = self._normalize_device_value(self._prompt_device("Microphone", self._default_mic))
+            system = self._normalize_device_value(
+                self._prompt_device("System", self._default_system)
+            )
             self._default_mic = mic
             self._default_system = system
             self._persist_device_setting("default_mic_device", mic, "microphone")
@@ -584,7 +594,7 @@ class RecordingWindowUI:
 
             captures: Dict[str, AudioCapture] = {}
             for channel, device in {"microphone": mic, "system": system}.items():
-                if device is None:
+                if device is None or device == DISABLED_DEVICE_SENTINEL:
                     continue
                 try:
                     capture = create_capture(
@@ -884,16 +894,32 @@ class RecordingWindowUI:
             return None
         return value
 
+    def _normalize_device_value(self, value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return None
+        if value == DISABLED_DEVICE_SENTINEL:
+            return DISABLED_DEVICE_SENTINEL
+        stripped = value.strip()
+        if not stripped:
+            return None
+        lowered = stripped.lower()
+        if lowered in DEVICE_DISABLE_KEYWORDS:
+            return DISABLED_DEVICE_SENTINEL
+        if lowered in {"default", "auto"}:
+            return None
+        return stripped
+
     def _prompt_device(self, label: str, current: Optional[str]) -> Optional[str]:
         assert simpledialog is not None
-        current_value = current or ""
+        current = self._normalize_device_value(current)
+        current_value = "" if current == DISABLED_DEVICE_SENTINEL else (current or "")
         current_display = self._format_device_display(current)
         value = simpledialog.askstring(
             f"{label} device",
             (
                 f"Enter the {label.lower()} device id/name.\n"
                 f"Current selection: {current_display}.\n"
-                "Leave empty to keep the current value or type 'skip' to disable."
+                "Leave empty for default/current or type 'skip' to disable."
             ),
             initialvalue=current_value,
             parent=self._root,
@@ -903,9 +929,8 @@ class RecordingWindowUI:
         value = value.strip()
         if not value:
             return current
-        if value.lower() in {"skip", "none", "off", "disabled"}:
-            return None
-        return value
+        normalized = self._normalize_device_value(value)
+        return normalized
 
     def _prompt_mix_down(self, current: bool) -> bool:
         assert messagebox is not None
@@ -936,13 +961,16 @@ class RecordingWindowUI:
         return value or current
 
     def _format_device_display(self, value: Optional[str]) -> str:
+        if value == DISABLED_DEVICE_SENTINEL:
+            return "disabled"
         if value:
             return value
-        return "disabled"
+        return "system default"
 
     def _persist_device_setting(
         self, field: str, value: Optional[str], label: str
     ) -> None:
+        value = self._normalize_device_value(value)
         try:
             if value is None:
                 updated_settings = clear_environment_setting(field)
@@ -954,9 +982,13 @@ class RecordingWindowUI:
 
         self._apply_settings(updated_settings)
         if field == "default_mic_device":
-            self._default_mic = updated_settings.default_mic_device
+            self._default_mic = self._normalize_device_value(
+                updated_settings.default_mic_device
+            )
         elif field == "default_system_device":
-            self._default_system = updated_settings.default_system_device
+            self._default_system = self._normalize_device_value(
+                updated_settings.default_system_device
+            )
 
     def _perform_device_test(self, device: str) -> None:
         request = CaptureRequest(
@@ -1070,6 +1102,8 @@ class RecordingWindowUI:
     def _format_env_value(self, value: Any) -> str:
         if value is None:
             return "(unset)"
+        if value == DISABLED_DEVICE_SENTINEL:
+            return "disabled"
         if isinstance(value, bool):
             return "true" if value else "false"
         return str(value)
