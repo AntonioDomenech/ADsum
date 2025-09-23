@@ -334,6 +334,8 @@ class RecordingWindowUI:
                             device=device,
                             sample_rate=self.sample_rate,
                             channels=self.channels,
+                            backend=self._settings.audio_backend,
+                            chunk_seconds=self._settings.chunk_seconds,
                         )
                     )
                 except CaptureConfigurationError as exc:

@@ -6,6 +6,7 @@ import sys
 from dataclasses import dataclass
 
 from adsum.core.audio import devices
+from adsum import config
 from adsum.core.audio.base import CaptureInfo
 
 
@@ -52,6 +53,11 @@ class _FakeSoundDeviceModule:
 def test_format_device_table_fallback_contains_install_hint(monkeypatch) -> None:
     """When no devices are found the fallback message should include install hint."""
 
+    monkeypatch.setattr(
+        devices,
+        "get_settings",
+        lambda: config.Settings(audio_backend="sounddevice"),
+    )
     monkeypatch.setattr(devices, "list_input_devices", lambda: [])
 
     message = devices.format_device_table()

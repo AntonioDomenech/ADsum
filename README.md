@@ -52,6 +52,23 @@ adsum ui --mic-device 2 --system-device 5 --transcription-backend openai --notes
 
 The UI launches from the terminal and lets you start, pause, resume, and stop recordings without additional CLI commands. Each channel is written to `recordings/<session-id>/raw`, a combined track is optionally rendered, and transcription/note generation can be triggered from the interface. Results are stored in `adsum.db`.
 
+### Capturing Bluetooth audio with FFmpeg
+
+ADsum now uses FFmpeg as the default capture engine so Bluetooth sources exposed by the operating system can be recorded reliably. When prompted for the microphone or system device provide an FFmpeg-style input specification using the pattern `<format>:<target>?option=value&...`. Examples:
+
+```
+# PulseAudio / PipeWire loopback for a Bluetooth headset
+pulse:bluez_source.AA_BB_CC_DD_EE_FF.monitor?sample_rate=48000&channels=2
+
+# Windows DirectShow capture from a Bluetooth microphone
+dshow:audio=Bluetooth Headset?sample_rate=48000&channels=1
+
+# macOS AVFoundation input index 1
+avfoundation:1?channels=1
+```
+
+Additional FFmpeg flags can be added via query parameters. For instance `args=-thread_queue_size 2048` (parsed with shell-style quoting) or `opt_timeout=5` (expanded to `-timeout 5`). If you prefer the previous PortAudio backend set `ADSUM_AUDIO_BACKEND=sounddevice`.
+
 Use the "Configure environment" menu entry to inspect or update any `ADSUM_` variables directly from the UI. Changes are persisted to your `.env` file for future sessions.
 
 ## Configuration
@@ -63,6 +80,8 @@ Environment variables customise behaviour via `pydantic` settings (prefix `ADSUM
 - `ADSUM_SAMPLE_RATE`: Sample rate used for capture (default `16000`).
 - `ADSUM_CHANNELS`: Number of channels per capture stream (default `1`).
 - `ADSUM_CHUNK_SECONDS`: Preferred chunk duration when streaming (default `1.0`).
+- `ADSUM_AUDIO_BACKEND`: Audio engine to use (`ffmpeg` by default, `sounddevice` for the legacy backend).
+- `ADSUM_FFMPEG_BINARY`: Override FFmpeg executable path when the binary is not available on PATH.
 - `ADSUM_DEFAULT_MIC_DEVICE`: Preferred microphone device identifier remembered between sessions.
 - `ADSUM_DEFAULT_SYSTEM_DEVICE`: Preferred system audio device identifier remembered between sessions.
 - `ADSUM_OPENAI_TRANSCRIPTION_MODEL`: Model used for OpenAI transcription.
