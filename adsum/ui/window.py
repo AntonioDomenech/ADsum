@@ -8,7 +8,7 @@ import threading
 import time
 from collections import deque
 from dataclasses import dataclass
-from typing import Any, Deque, Dict, Optional, Set
+from typing import Any, Deque, Dict, Iterable, Optional, Set
 
 try:  # pragma: no cover - import guard for optional tkinter dependency
     import tkinter as tk
@@ -33,7 +33,7 @@ from ..config import (
 )
 from ..data.models import TranscriptResult
 from ..core.audio.base import AudioCapture
-from ..core.audio.devices import format_device_table
+from ..core.audio.devices import DeviceInfo, format_device_table, list_input_devices
 from ..core.audio.factory import (
     CaptureConfigurationError,
     CaptureRequest,
@@ -651,14 +651,28 @@ class RecordingWindowUI:
             name = self._prompt_session_name(name_default)
             self._default_name = name
 
-            self._show_text_window("Available audio devices", format_device_table())
-
-            mic = self._normalize_device_value(self._prompt_device("Microphone", self._default_mic))
-            system = self._normalize_device_value(
-                self._prompt_device("System", self._default_system)
+            (
+                mic,
+                system,
+                mix_down,
+                transcription_name,
+                notes_name,
+            ) = self._prompt_recording_configuration(
+                current_mic=self._default_mic,
+                current_system=self._default_system,
+                current_mix_down=self.mix_down,
+                current_transcription=self._transcription_backend_name,
+                current_notes=self._notes_backend_name,
             )
+
+            mic = self._normalize_device_value(mic)
+            system = self._normalize_device_value(system)
             self._default_mic = mic
             self._default_system = system
+            self.mix_down = mix_down
+            self._transcription_backend_name = transcription_name
+            self._notes_backend_name = notes_name
+
             self._persist_device_setting("default_mic_device", mic, "microphone")
             self._persist_device_setting("default_system_device", system, "system")
 
@@ -686,16 +700,6 @@ class RecordingWindowUI:
             if not captures:
                 self._error("No audio devices configured. Recording aborted.")
                 return
-
-            mix_down = self._prompt_mix_down(self.mix_down)
-            self.mix_down = mix_down
-
-            transcription_name = (
-                self._prompt_backend("Transcription backend", self._transcription_backend_name) or "none"
-            ).strip().lower()
-            notes_name = (
-                self._prompt_backend("Notes backend", self._notes_backend_name) or "none"
-            ).strip().lower()
 
             try:
                 transcription = resolve_transcription_backend(transcription_name)
@@ -979,56 +983,179 @@ class RecordingWindowUI:
             return None
         return stripped
 
-    def _prompt_device(self, label: str, current: Optional[str]) -> Optional[str]:
-        assert simpledialog is not None
-        current = self._normalize_device_value(current)
-        current_value = "" if current == DISABLED_DEVICE_SENTINEL else (current or "")
-        current_display = self._format_device_display(current)
-        value = simpledialog.askstring(
-            f"{label} device",
-            (
-                f"Enter the {label.lower()} device id/name.\n"
-                f"Current selection: {current_display}.\n"
-                "Leave empty for default/current or type 'skip' to disable."
-            ),
-            initialvalue=current_value,
-            parent=self._root,
+    def _prompt_recording_configuration(
+        self,
+        *,
+        current_mic: Optional[str],
+        current_system: Optional[str],
+        current_mix_down: bool,
+        current_transcription: Optional[str],
+        current_notes: Optional[str],
+    ) -> tuple[Optional[str], Optional[str], bool, str, str]:
+        assert tk is not None and ttk is not None and ScrolledText is not None
+
+        devices = list_input_devices()
+        option_map = self._build_device_option_map(devices)
+        option_labels = list(option_map.keys())
+
+        window = tk.Toplevel(self._root)
+        window.title("Recording options")
+        window.transient(self._root)
+        window.grab_set()
+
+        window.columnconfigure(0, weight=1)
+        window.rowconfigure(0, weight=1)
+
+        main = ttk.Frame(window, padding=(20, 16))
+        main.grid(row=0, column=0, sticky="nsew")
+        main.columnconfigure(1, weight=1)
+        main.rowconfigure(6, weight=1)
+
+        ttk.Label(
+            main,
+            text="Choose the audio sources and services for this session.",
+            style="Body.TLabel",
+            wraplength=520,
+        ).grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 12))
+
+        mic_var = tk.StringVar(value=self._device_display_for_value(current_mic, option_map))
+        system_var = tk.StringVar(
+            value=self._device_display_for_value(current_system, option_map)
         )
-        if value is None:
+        mix_var = tk.BooleanVar(value=current_mix_down)
+        transcription_var = tk.StringVar(value=(current_transcription or "none"))
+        notes_var = tk.StringVar(value=(current_notes or "none"))
+
+        ttk.Label(main, text="Microphone input", style="CardTitle.TLabel").grid(
+            row=1, column=0, sticky="w"
+        )
+        ttk.Combobox(
+            main,
+            textvariable=mic_var,
+            values=option_labels,
+            width=45,
+            state="normal",
+        ).grid(row=1, column=1, sticky="ew", padx=(12, 0))
+
+        ttk.Label(main, text="System audio", style="CardTitle.TLabel").grid(
+            row=2, column=0, sticky="w", pady=(8, 0)
+        )
+        ttk.Combobox(
+            main,
+            textvariable=system_var,
+            values=option_labels,
+            width=45,
+            state="normal",
+        ).grid(row=2, column=1, sticky="ew", padx=(12, 0), pady=(8, 0))
+
+        ttk.Checkbutton(
+            main,
+            text="Create a mixed track combining all active inputs",
+            variable=mix_var,
+        ).grid(row=3, column=0, columnspan=2, sticky="w", pady=(12, 0))
+
+        backend_options = ("none", "dummy", "openai")
+
+        ttk.Label(main, text="Transcription backend", style="CardTitle.TLabel").grid(
+            row=4, column=0, sticky="w", pady=(16, 0)
+        )
+        ttk.Combobox(
+            main,
+            textvariable=transcription_var,
+            values=backend_options,
+            width=20,
+            state="normal",
+        ).grid(row=4, column=1, sticky="w", padx=(12, 0), pady=(16, 0))
+
+        ttk.Label(main, text="Notes backend", style="CardTitle.TLabel").grid(
+            row=5, column=0, sticky="w", pady=(8, 0)
+        )
+        ttk.Combobox(
+            main,
+            textvariable=notes_var,
+            values=backend_options,
+            width=20,
+            state="normal",
+        ).grid(row=5, column=1, sticky="w", padx=(12, 0), pady=(8, 0))
+
+        device_frame = ttk.LabelFrame(main, text="Detected devices", padding=(12, 10))
+        device_frame.grid(row=6, column=0, columnspan=2, sticky="nsew", pady=(16, 0))
+        device_frame.columnconfigure(0, weight=1)
+
+        device_text = ScrolledText(device_frame, height=8, width=70)
+        device_text.insert("1.0", format_device_table())
+        device_text.configure(state="disabled")
+        device_text.grid(row=0, column=0, sticky="nsew")
+
+        button_frame = ttk.Frame(main)
+        button_frame.grid(row=7, column=0, columnspan=2, sticky="e", pady=(16, 0))
+
+        confirmed = {"value": False}
+
+        def on_cancel() -> None:
+            confirmed["value"] = False
+            window.destroy()
+
+        def on_confirm() -> None:
+            confirmed["value"] = True
+            window.destroy()
+
+        ttk.Button(button_frame, text="Cancel", command=on_cancel).grid(
+            row=0, column=0, padx=(0, 8)
+        )
+        ttk.Button(button_frame, text="Continue", command=on_confirm).grid(row=0, column=1)
+
+        window.protocol("WM_DELETE_WINDOW", on_cancel)
+        window.wait_window()
+
+        if not confirmed["value"]:
             raise _UserCancelled
-        value = value.strip()
-        if not value:
-            return current
+
+        mic_value = self._resolve_device_selection(mic_var.get(), option_map)
+        system_value = self._resolve_device_selection(system_var.get(), option_map)
+        transcription_value = transcription_var.get().strip().lower() or "none"
+        notes_value = notes_var.get().strip().lower() or "none"
+
+        return mic_value, system_value, bool(mix_var.get()), transcription_value, notes_value
+
+    def _build_device_option_map(
+        self, devices: Optional[Iterable[DeviceInfo]]
+    ) -> Dict[str, Optional[str]]:
+        options: Dict[str, Optional[str]] = {
+            "Use system default": None,
+            "Disable capture": DISABLED_DEVICE_SENTINEL,
+        }
+
+        for device in devices or []:
+            label = f"[{device.id}] {device.name}"
+            if device.is_loopback:
+                label += " (loopback)"
+            options[label] = str(device.id)
+
+        return options
+
+    def _device_display_for_value(
+        self, value: Optional[str], options: Dict[str, Optional[str]]
+    ) -> str:
         normalized = self._normalize_device_value(value)
+        for display, option_value in options.items():
+            if option_value == normalized or (
+                option_value is None and normalized is None
+            ):
+                return display
+        if normalized is None:
+            return "Use system default"
         return normalized
 
-    def _prompt_mix_down(self, current: bool) -> bool:
-        assert messagebox is not None
-        result = messagebox.askyesnocancel(
-            "Create mixed track",
-            (
-                "Create a mixed audio track combining all inputs?\n"
-                f"Select 'Cancel' to keep the current setting ({'enabled' if current else 'disabled'})."
-            ),
-            parent=self._root,
-        )
-        if result is None:
-            return current
-        return bool(result)
-
-    def _prompt_backend(self, label: str, current: Optional[str]) -> str:
-        assert simpledialog is not None
-        current = current or "none"
-        value = simpledialog.askstring(
-            label,
-            f"Select {label.lower()} (none/dummy/openai):",
-            initialvalue=current,
-            parent=self._root,
-        )
-        if value is None:
-            raise _UserCancelled
-        value = value.strip()
-        return value or current
+    def _resolve_device_selection(
+        self, selection: str, options: Dict[str, Optional[str]]
+    ) -> Optional[str]:
+        choice = selection.strip()
+        if not choice:
+            return None
+        if choice in options:
+            return options[choice]
+        return choice
 
     def _format_device_display(self, value: Optional[str]) -> str:
         if value == DISABLED_DEVICE_SENTINEL:
