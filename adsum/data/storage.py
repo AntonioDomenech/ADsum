@@ -61,6 +61,12 @@ class SessionStore:
                 )
                 """
             )
+            conn.execute(
+                """
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_notes_session_id
+                ON notes(session_id)
+                """
+            )
             conn.commit()
 
     def save_session(self, session: RecordingSession) -> None:
@@ -114,8 +120,12 @@ class SessionStore:
         with self._connect() as conn:
             conn.execute(
                 """
-                INSERT OR REPLACE INTO notes (session_id, title, summary, action_items)
+                INSERT INTO notes (session_id, title, summary, action_items)
                 VALUES (?, ?, ?, ?)
+                ON CONFLICT(session_id) DO UPDATE SET
+                    title=excluded.title,
+                    summary=excluded.summary,
+                    action_items=excluded.action_items
                 """,
                 (
                     notes.session_id,
