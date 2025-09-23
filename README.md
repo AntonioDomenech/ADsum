@@ -85,7 +85,9 @@ Environment variables customise behaviour via `pydantic` settings (prefix `ADSUM
   On Windows, ADsum also checks common installation folders such as `C:\\ffmpeg\\bin` and
   `C:\\Program Files\\FFmpeg\\bin`. If FFmpeg still cannot be found, download a build from
   [ffmpeg.org](https://ffmpeg.org/download.html) and either add its `bin` directory to `PATH` or
-  point `ADSUM_FFMPEG_BINARY` directly at the `ffmpeg.exe` file.
+  point `ADSUM_FFMPEG_BINARY` directly at the `ffmpeg.exe` file. When ADsum cannot locate the
+  executable during a recording attempt, both interactive interfaces now offer to browse for the
+  correct binary and persist it to your `.env` file automatically.
 - `ADSUM_DEFAULT_MIC_DEVICE`: Preferred microphone device identifier remembered between sessions.
 - `ADSUM_DEFAULT_SYSTEM_DEVICE`: Preferred system audio device identifier remembered between sessions.
 - `ADSUM_OPENAI_TRANSCRIPTION_MODEL`: Model used for OpenAI transcription.

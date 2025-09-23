@@ -14,11 +14,12 @@ from urllib.parse import urlsplit
 try:  # pragma: no cover - import guard for optional tkinter dependency
     import tkinter as tk
     from tkinter import font as tkfont
-    from tkinter import messagebox, simpledialog, ttk
+    from tkinter import filedialog, messagebox, simpledialog, ttk
     from tkinter.scrolledtext import ScrolledText
 except Exception:  # pragma: no cover - headless environments may lack tkinter
     tk = None  # type: ignore[assignment]
     tkfont = None  # type: ignore[assignment]
+    filedialog = None  # type: ignore[assignment]
     messagebox = None  # type: ignore[assignment]
     simpledialog = None  # type: ignore[assignment]
     ttk = None  # type: ignore[assignment]
@@ -41,6 +42,7 @@ from ..core.audio.factory import (
     DISABLED_DEVICE_SENTINEL,
     create_capture,
 )
+from ..core.audio.ffmpeg_backend import FFmpegBinaryNotFoundError
 
 
 DEVICE_DISABLE_KEYWORDS = {"skip", "none", "off", "disabled"}
@@ -123,6 +125,7 @@ class RecordingWindowUI:
         self._pending_error: Optional[Exception] = None
         self._last_outcome: Optional[RecordingOutcome] = None
         self._fonts: Dict[str, Any] = {}
+        self._ffmpeg_prompted = False
 
         # Tk widgets set during run()
         self._root: Optional[tk.Tk] = None
@@ -1473,7 +1476,8 @@ class RecordingWindowUI:
             self._active.thread.join()
             self._active = None
             if self._pending_error:
-                self._error(f"Recording failed: {self._pending_error}")
+                if not self._handle_recording_failure(self._pending_error):
+                    self._error(f"Recording failed: {self._pending_error}")
                 if not self._transcript_results:
                     self._update_transcription_status(
                         "Recording failed before transcription could complete."
@@ -1503,6 +1507,63 @@ class RecordingWindowUI:
                     self._info("Notes summary available via the Notes button.")
             self._pending_error = None
             self._pending_outcome = None
+
+    def _handle_recording_failure(self, exc: Exception) -> bool:
+        if isinstance(exc, FFmpegBinaryNotFoundError):
+            self._error(str(exc))
+            self._prompt_ffmpeg_path()
+            return True
+        return False
+
+    def _prompt_ffmpeg_path(self) -> None:
+        if self._ffmpeg_prompted:
+            self._info(
+                "FFmpeg path still missing. Use Configure ▸ Environment to update "
+                "ADSUM_FFMPEG_BINARY when ready."
+            )
+            return
+
+        self._ffmpeg_prompted = True
+
+        if messagebox is not None and self._root is not None:
+            proceed = messagebox.askyesno(
+                "Locate FFmpeg",
+                "ADsum could not find ffmpeg. Would you like to choose the executable now?",
+                parent=self._root,
+            )
+            if not proceed:
+                self._info(
+                    "You can configure ADSUM_FFMPEG_BINARY later from Configure ▸ Environment."
+                )
+                return
+
+        if filedialog is None or self._root is None:
+            self._info(
+                "Tk file dialogs are unavailable. Set ADSUM_FFMPEG_BINARY manually via the "
+                "Environment menu or operating system settings."
+            )
+            return
+
+        path = filedialog.askopenfilename(
+            parent=self._root,
+            title="Select ffmpeg executable",
+            filetypes=[("FFmpeg executable", "ffmpeg.exe"), ("All files", "*")],
+        )
+
+        if not path:
+            self._info(
+                "No executable selected. Configure ADSUM_FFMPEG_BINARY later from the Environment menu."
+            )
+            return
+
+        try:
+            updated = update_environment_setting("ffmpeg_binary", path)
+        except EnvironmentSettingError as exc:
+            self._error(f"Failed to store FFmpeg path: {exc}")
+            return
+
+        self._apply_settings(updated)
+        self._info(f"FFmpeg path saved to ADSUM_FFMPEG_BINARY: {path}")
 
     def _shutdown_active_recording(self) -> None:
         if self._active and self._active.thread.is_alive():

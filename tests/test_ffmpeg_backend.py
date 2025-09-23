@@ -9,6 +9,7 @@ import pytest
 import adsum.core.audio.ffmpeg_backend as ffmpeg_backend
 from adsum.core.audio.base import CaptureInfo
 from adsum.core.audio.ffmpeg_backend import (
+    FFmpegBinaryNotFoundError,
     FFmpegCapture,
     parse_ffmpeg_device,
     CaptureError,
@@ -148,9 +149,15 @@ def test_missing_binary_error_message(monkeypatch) -> None:
 
     monkeypatch.setattr(ffmpeg_backend, "_resolve_binary", lambda binary: None)
 
-    with pytest.raises(CaptureError) as excinfo:
+    with pytest.raises(FFmpegBinaryNotFoundError) as excinfo:
         capture.start()
 
     message = str(excinfo.value)
     assert "Install FFmpeg" in message
     assert "ADSUM_FFMPEG_BINARY" in message
+    assert excinfo.value.requested == "ffmpeg"
+
+
+def test_ffmpeg_binary_not_found_is_capture_error() -> None:
+    error = FFmpegBinaryNotFoundError("ffmpeg")
+    assert isinstance(error, CaptureError)
