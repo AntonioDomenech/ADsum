@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import List, Optional
+from typing import Iterable, List, Optional
 
 from ...config import get_settings
 from ...logging import get_logger
@@ -72,15 +72,19 @@ def list_input_devices() -> List[DeviceInfo]:
     return results
 
 
-def format_device_table() -> str:
+def format_device_table(devices: Optional[Iterable[DeviceInfo]] = None) -> str:
     settings = get_settings()
     backend = (settings.audio_backend or "").lower()
 
-    if backend == "ffmpeg":
+    if backend == "ffmpeg" and devices is None:
         return _format_ffmpeg_instructions(settings.ffmpeg_binary)
 
-    devices = list_input_devices()
-    if not devices:
+    if devices is None:
+        device_list = list_input_devices()
+    else:
+        device_list = list(devices)
+
+    if not device_list:
         return (
             "No input devices detected. Install optional audio support with "
             "`pip install adsum[audio]` and ensure audio hardware is accessible."
@@ -88,7 +92,7 @@ def format_device_table() -> str:
 
     header = f"{'ID':>3} | {'Name':<40} | {'In':>2} | {'Rate':>7} | Host API | Loopback"
     lines = [header, "-" * len(header)]
-    for device in devices:
+    for device in device_list:
         lines.append(
             f"{device.id:>3} | {device.name:<40.40} | {device.max_input_channels:>2} | "
             f"{int(device.default_samplerate):>7} | {device.hostapi:<8} | {('yes' if device.is_loopback else 'no'):>8}"

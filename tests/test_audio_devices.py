@@ -66,6 +66,32 @@ def test_format_device_table_fallback_contains_install_hint(monkeypatch) -> None
     assert "pip install adsum[audio]" in message
 
 
+def test_format_device_table_accepts_custom_device_list(monkeypatch) -> None:
+    """Providing an explicit device list should bypass automatic discovery."""
+
+    monkeypatch.setattr(
+        devices,
+        "get_settings",
+        lambda: config.Settings(audio_backend="sounddevice"),
+    )
+
+    custom_devices = [
+        devices.DeviceInfo(
+            id=7,
+            name="Custom Microphone",
+            max_input_channels=2,
+            default_samplerate=48_000.0,
+            hostapi="CoreAudio",
+            is_loopback=False,
+        )
+    ]
+
+    table = devices.format_device_table(custom_devices)
+
+    assert "Custom Microphone" in table
+    assert "  7 |" in table
+
+
 def test_wasapi_loopback_fallback_without_keyword(monkeypatch) -> None:
     """Older sounddevice builds should enable WASAPI loopback via fallback logic."""
 

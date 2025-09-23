@@ -8,7 +8,7 @@ import threading
 import time
 from collections import deque
 from dataclasses import dataclass
-from typing import Any, Deque, Dict, Iterable, Optional, Set
+from typing import Any, Deque, Dict, Iterable, List, Optional, Set, Tuple
 from urllib.parse import urlsplit
 
 try:  # pragma: no cover - import guard for optional tkinter dependency
@@ -655,6 +655,8 @@ class RecordingWindowUI:
             name = self._prompt_session_name(name_default)
             self._default_name = name
 
+            working_devices, device_report = self._auto_detect_working_devices()
+
             (
                 mic,
                 system,
@@ -667,6 +669,8 @@ class RecordingWindowUI:
                 current_mix_down=self.mix_down,
                 current_transcription=self._transcription_backend_name,
                 current_notes=self._notes_backend_name,
+                available_devices=working_devices,
+                device_report=device_report,
             )
 
             mic = self._normalize_device_value(mic)
@@ -987,6 +991,110 @@ class RecordingWindowUI:
             return None
         return stripped
 
+    def _auto_detect_working_devices(self) -> Tuple[List[DeviceInfo], str]:
+        devices = list_input_devices()
+
+        if not devices:
+            message = (
+                "No audio input devices were detected. Install optional audio support with "
+                "`pip install adsum[audio]` and ensure audio hardware is accessible."
+            )
+            self._info("No audio input devices were detected before starting the session.")
+            return [], message
+
+        self._info("Testing detected audio devices before starting the recording wizard...")
+
+        working: List[DeviceInfo] = []
+        failed: List[Tuple[DeviceInfo, str]] = []
+
+        for device in devices:
+            device_spec = str(device.id)
+            label = f"[{device.id}] {device.name}"
+            self._info(f"Probing {label}...")
+            success, reason = self._probe_device_capture(device_spec)
+            if success:
+                working.append(device)
+                self._info(f"{label} is ready for use.")
+            else:
+                failed.append((device, reason))
+                reason_text = reason or "unavailable"
+                self._info(f"{label} will be skipped: {reason_text}.")
+
+        if not working:
+            self._info(
+                "No working audio inputs were detected. You can proceed with system defaults or "
+                "disable individual channels."
+            )
+
+        report = self._format_device_probe_report(working, failed)
+        return working, report
+
+    def _probe_device_capture(self, device: str) -> Tuple[bool, str]:
+        request = CaptureRequest(
+            channel="probe",
+            device=device,
+            sample_rate=self.sample_rate,
+            channels=self.channels,
+            backend=self._settings.audio_backend,
+            chunk_seconds=self._settings.chunk_seconds,
+        )
+
+        try:
+            capture = create_capture(request)
+        except CaptureConfigurationError as exc:
+            return False, f"configuration error: {exc}"
+
+        if capture is None:
+            return False, "no capture backend available"
+
+        try:
+            capture.start()
+            chunk = None
+            deadline = time.time() + 1.5
+            while time.time() < deadline:
+                try:
+                    chunk = capture.read(timeout=0.3)
+                except CaptureError as exc:
+                    return False, f"read failed: {exc}"
+                if chunk is not None and getattr(chunk, "size", 0) > 0:
+                    return True, ""
+            return False, "no audio data received"
+        except CaptureError as exc:
+            return False, f"capture error: {exc}"
+        except Exception as exc:  # pragma: no cover - depends on runtime backend
+            LOGGER.exception("Unexpected error while probing device %s: %s", device, exc)
+            return False, str(exc)
+        finally:
+            with contextlib.suppress(Exception):
+                capture.stop()
+            with contextlib.suppress(Exception):
+                capture.close()
+
+    def _format_device_probe_report(
+        self,
+        working: Iterable[DeviceInfo],
+        failed: Iterable[Tuple[DeviceInfo, str]],
+    ) -> str:
+        working_list = list(working)
+        failed_list = list(failed)
+
+        sections: List[str] = []
+
+        if working_list:
+            sections.append("Working audio input devices:")
+            sections.append(format_device_table(working_list))
+        else:
+            sections.append("No working audio input devices were detected.")
+
+        if failed_list:
+            lines = ["", "Devices skipped after testing:"]
+            for device, reason in failed_list:
+                detail = reason or "unavailable"
+                lines.append(f"  [{device.id}] {device.name} — {detail}")
+            sections.extend(lines)
+
+        return "\n".join(sections)
+
     def _prompt_recording_configuration(
         self,
         *,
@@ -995,12 +1103,18 @@ class RecordingWindowUI:
         current_mix_down: bool,
         current_transcription: Optional[str],
         current_notes: Optional[str],
+        available_devices: Optional[Iterable[DeviceInfo]] = None,
+        device_report: Optional[str] = None,
     ) -> tuple[Optional[str], Optional[str], bool, str, str]:
         assert tk is not None and ttk is not None and ScrolledText is not None
 
-        devices = list_input_devices()
+        if available_devices is None:
+            devices = list_input_devices()
+        else:
+            devices = list(available_devices)
         option_map = self._build_device_option_map(devices)
         option_labels = list(option_map.keys())
+        allowed_values = set(option_map.values())
 
         window = tk.Toplevel(self._root)
         window.title("Recording options")
@@ -1035,13 +1149,27 @@ class RecordingWindowUI:
             wraplength=520,
         ).grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 12))
 
-        mic_var = tk.StringVar(value=self._device_display_for_value(current_mic, option_map))
-        system_var = tk.StringVar(
-            value=self._device_display_for_value(current_system, option_map)
+        normalized_mic = self._normalize_device_value(current_mic)
+        normalized_system = self._normalize_device_value(current_system)
+
+        mic_initial = (
+            self._device_display_for_value(current_mic, option_map)
+            if normalized_mic in allowed_values
+            else "Use system default"
         )
+        system_initial = (
+            self._device_display_for_value(current_system, option_map)
+            if normalized_system in allowed_values
+            else "Use system default"
+        )
+
+        mic_var = tk.StringVar(value=mic_initial)
+        system_var = tk.StringVar(value=system_initial)
         mix_var = tk.BooleanVar(value=current_mix_down)
         transcription_var = tk.StringVar(value=(current_transcription or "none"))
         notes_var = tk.StringVar(value=(current_notes or "none"))
+
+        combo_state = "readonly" if available_devices is not None else "normal"
 
         ttk.Label(main, text="Microphone input", style="CardTitle.TLabel").grid(
             row=1, column=0, sticky="w"
@@ -1051,7 +1179,7 @@ class RecordingWindowUI:
             textvariable=mic_var,
             values=option_labels,
             width=45,
-            state="normal",
+            state=combo_state,
         ).grid(row=1, column=1, sticky="ew", padx=(12, 0))
 
         ttk.Label(main, text="System audio", style="CardTitle.TLabel").grid(
@@ -1062,7 +1190,7 @@ class RecordingWindowUI:
             textvariable=system_var,
             values=option_labels,
             width=45,
-            state="normal",
+            state=combo_state,
         ).grid(row=2, column=1, sticky="ew", padx=(12, 0), pady=(8, 0))
 
         ttk.Checkbutton(
@@ -1115,7 +1243,10 @@ class RecordingWindowUI:
         device_frame.columnconfigure(0, weight=1)
 
         device_text = ScrolledText(device_frame, height=8, width=70)
-        device_text.insert("1.0", format_device_table())
+        device_text.insert(
+            "1.0",
+            device_report if device_report is not None else format_device_table(),
+        )
         device_text.configure(state="disabled")
         device_text.grid(row=0, column=0, sticky="nsew")
 
