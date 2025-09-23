@@ -19,6 +19,8 @@ class Settings(BaseSettings):
     sample_rate: int = 16_000
     channels: int = 1
     chunk_seconds: float = 1.0
+    audio_backend: str = "ffmpeg"
+    ffmpeg_binary: str = "ffmpeg"
     openai_transcription_model: str = "gpt-4o-mini-transcribe"
     openai_notes_model: str = "gpt-4o-mini"
     openai_api_key: Optional[str] = None

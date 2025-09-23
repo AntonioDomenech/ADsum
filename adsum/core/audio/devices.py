@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import List, Optional
 
+from ...config import get_settings
 from ...logging import get_logger
 from .sounddevice_backend import wasapi_loopback_capable
 
@@ -72,6 +73,12 @@ def list_input_devices() -> List[DeviceInfo]:
 
 
 def format_device_table() -> str:
+    settings = get_settings()
+    backend = (settings.audio_backend or "").lower()
+
+    if backend == "ffmpeg":
+        return _format_ffmpeg_instructions(settings.ffmpeg_binary)
+
     devices = list_input_devices()
     if not devices:
         return (
@@ -87,6 +94,21 @@ def format_device_table() -> str:
             f"{int(device.default_samplerate):>7} | {device.hostapi:<8} | {('yes' if device.is_loopback else 'no'):>8}"
         )
     return "\n".join(lines)
+
+
+def _format_ffmpeg_instructions(binary: str) -> str:
+    message = [
+        "FFmpeg backend is active. Provide a capture specification for each channel.",
+        "The format follows: <input-format>:<input-target>?option=value&...",
+        "Examples:",
+        "  pulse:bluez_source.XX?sample_rate=48000&channels=2",
+        "  dshow:audio=Bluetooth Headset?sample_rate=48000&channels=1",
+        "  avfoundation:0?channels=1",
+        "Additional FFmpeg arguments can be provided with args= or opt_/flag_ parameters.",
+        "Set ADSUM_AUDIO_BACKEND=sounddevice if you prefer the legacy PortAudio backend.",
+        f"Using FFmpeg binary: {binary}",
+    ]
+    return "\n".join(message)
 
 
 __all__ = ["DeviceInfo", "list_input_devices", "format_device_table"]
