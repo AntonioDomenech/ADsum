@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import types
 
 import numpy as np
 import pytest
@@ -120,3 +121,36 @@ def test_ffmpeg_capture_stream(monkeypatch) -> None:
     assert chunk.shape == (2, 2)
     assert np.isclose(chunk[0, 1], 1.0, atol=1e-4)
     assert np.isclose(chunk[1, 0], 0.5, atol=1e-4)
+
+
+def test_resolve_binary_appends_exe_on_windows(tmp_path, monkeypatch) -> None:
+    fake_root = tmp_path / "ffmpeg"
+    fake_root.parent.mkdir(parents=True, exist_ok=True)
+    fake_binary = fake_root.with_suffix(".exe")
+    fake_binary.write_bytes(b"")
+
+    monkeypatch.setattr(ffmpeg_backend, "os", types.SimpleNamespace(name="nt", environ={}))
+    monkeypatch.setattr(ffmpeg_backend.shutil, "which", lambda name: None)
+
+    resolved = ffmpeg_backend._resolve_binary(str(fake_root))
+
+    assert resolved == str(fake_binary)
+
+
+def test_missing_binary_error_message(monkeypatch) -> None:
+    spec = parse_ffmpeg_device(
+        "pulse:device?sample_rate=16000&channels=1",
+        default_sample_rate=16000,
+        default_channels=1,
+    )
+    info = CaptureInfo(name="microphone", sample_rate=16000, channels=1)
+    capture = FFmpegCapture(info, spec=spec, binary="ffmpeg")
+
+    monkeypatch.setattr(ffmpeg_backend, "_resolve_binary", lambda binary: None)
+
+    with pytest.raises(CaptureError) as excinfo:
+        capture.start()
+
+    message = str(excinfo.value)
+    assert "Install FFmpeg" in message
+    assert "ADSUM_FFMPEG_BINARY" in message

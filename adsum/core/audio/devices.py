@@ -104,6 +104,8 @@ def _format_ffmpeg_instructions(binary: str) -> str:
         "  pulse:bluez_source.XX?sample_rate=48000&channels=2",
         "  dshow:audio=Bluetooth Headset?sample_rate=48000&channels=1",
         "  avfoundation:0?channels=1",
+        "If FFmpeg is not installed, download a build from https://ffmpeg.org/download.html",
+        "and add the 'bin' directory to PATH or set ADSUM_FFMPEG_BINARY to the full path.",
         "Additional FFmpeg arguments can be provided with args= or opt_/flag_ parameters.",
         "Set ADSUM_AUDIO_BACKEND=sounddevice if you prefer the legacy PortAudio backend.",
         f"Using FFmpeg binary: {binary}",

@@ -295,7 +295,11 @@ class FFmpegCapture(AudioCapture):
 
         executable = _resolve_binary(self._binary)
         if executable is None:
-            raise CaptureError(f"FFmpeg binary '{self._binary}' was not found on PATH")
+            raise CaptureError(
+                "FFmpeg binary "
+                f"'{self._binary}' was not found. Install FFmpeg and ensure the executable "
+                "is on PATH, or set ADSUM_FFMPEG_BINARY to the full path to the ffmpeg executable."
+            )
 
         command = self._build_command(executable)
         LOGGER.info("Starting FFmpeg capture for %s using %s", self.info.name, executable)
@@ -474,6 +478,7 @@ def _resolve_binary(binary: str) -> Optional[str]:
     if not binary:
         binary = "ffmpeg"
 
+    # Direct PATH lookup first.
     found = shutil.which(binary)
     if found:
         return found
@@ -481,6 +486,45 @@ def _resolve_binary(binary: str) -> Optional[str]:
     candidate = Path(binary)
     if candidate.exists():
         return str(candidate)
+
+    # Windows installers frequently append the .exe suffix even when users omit it
+    # in configuration. Try the obvious variants before giving up.
+    if os.name == "nt":  # pragma: no cover - exercised through unit tests via monkeypatch
+        suffix = candidate.suffix
+        if not suffix.lower().endswith(".exe"):
+            exe_candidate = candidate.with_suffix(suffix + ".exe" if suffix else ".exe")
+            if exe_candidate.exists():
+                return str(exe_candidate)
+
+        exe_name = binary if binary.lower().endswith(".exe") else f"{binary}.exe"
+        found_exe = shutil.which(exe_name)
+        if found_exe:
+            return found_exe
+
+        # Look in a couple of conventional installation directories that are not
+        # automatically added to PATH by zip-based Windows builds of FFmpeg.
+        search_roots = []
+        for env_var in ("ProgramFiles", "ProgramFiles(x86)", "ProgramW6432"):
+            root = os.environ.get(env_var)
+            if root:
+                search_roots.append(Path(root) / "ffmpeg" / "bin")
+                search_roots.append(Path(root) / "FFmpeg" / "bin")
+
+        search_roots.extend(
+            [
+                Path("C:/ffmpeg/bin"),
+                Path("C:/ProgramData/chocolatey/lib/ffmpeg/tools/ffmpeg/bin"),
+            ]
+        )
+
+        base_name = candidate.name or Path(exe_name).name
+        if not base_name.lower().endswith(".exe"):
+            base_name = f"{base_name}.exe"
+
+        for directory in search_roots:
+            potential = directory / base_name
+            if potential.exists():
+                return str(potential)
 
     return None
 
