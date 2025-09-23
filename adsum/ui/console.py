@@ -28,7 +28,11 @@ from ..core.audio.ffmpeg_backend import FFmpegBinaryNotFoundError, ensure_ffmpeg
 
 
 DEVICE_DISABLE_KEYWORDS = {"skip", "none", "off", "disabled"}
-from ..core.audio.devices import format_device_table
+from ..core.audio.devices import (
+    FFmpegDeviceEnumerationError,
+    format_device_table,
+    format_ffmpeg_error_message,
+)
 from ..core.pipeline.orchestrator import (
     RecordingControl,
     RecordingOrchestrator,
@@ -153,7 +157,7 @@ class RecordingConsoleUI:
         self._default_name = name
 
         print()
-        print(format_device_table())
+        print(self._render_device_table())
 
         mic = self._normalize_device_value(self._prompt_device("Microphone", self._default_mic))
         system = self._normalize_device_value(
@@ -295,7 +299,7 @@ class RecordingConsoleUI:
 
     def _show_devices(self) -> None:
         print()
-        print(format_device_table())
+        print(self._render_device_table())
 
     def _configure_environment(self) -> None:
         while True:
@@ -391,6 +395,18 @@ class RecordingConsoleUI:
         if value:
             return value
         return "system default"
+
+    def _render_device_table(self) -> str:
+        try:
+            return format_device_table()
+        except FFmpegBinaryNotFoundError as exc:
+            LOGGER.error("FFmpeg binary unavailable while listing devices: %s", exc)
+            message = f"Unable to launch FFmpeg for device enumeration: {exc}"
+            return format_ffmpeg_error_message(self._settings.ffmpeg_binary, message)
+        except FFmpegDeviceEnumerationError as exc:
+            LOGGER.error("FFmpeg device enumeration failed: %s", exc)
+            message = f"Unable to enumerate FFmpeg audio devices: {exc}"
+            return format_ffmpeg_error_message(self._settings.ffmpeg_binary, message)
 
     def _persist_device_setting(
         self, field: str, value: Optional[str], label: str

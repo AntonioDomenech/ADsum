@@ -35,7 +35,13 @@ from ..config import (
 )
 from ..data.models import TranscriptResult
 from ..core.audio.base import AudioCapture, CaptureError
-from ..core.audio.devices import DeviceInfo, format_device_table, list_input_devices
+from ..core.audio.devices import (
+    DeviceInfo,
+    FFmpegDeviceEnumerationError,
+    format_device_table,
+    format_ffmpeg_error_message,
+    list_input_devices,
+)
 from ..core.audio.factory import (
     CaptureConfigurationError,
     CaptureRequest,
@@ -860,7 +866,7 @@ class RecordingWindowUI:
         if not self._root:
             return
 
-        self._show_text_window("Available audio devices", format_device_table())
+        self._show_text_window("Available audio devices", self._render_device_table())
 
         last_value = self._default_mic or self._default_system or ""
         tested_any = False
@@ -915,7 +921,7 @@ class RecordingWindowUI:
         self._show_text_window("Stored sessions", "\n".join(lines))
 
     def _show_devices(self) -> None:
-        self._show_text_window("Audio devices", format_device_table())
+        self._show_text_window("Audio devices", self._render_device_table())
 
     def _configure_environment(self) -> None:
         settings_entries = list(list_environment_settings(self._settings))
@@ -1064,11 +1070,23 @@ class RecordingWindowUI:
             return None
         return stripped
 
+    def _render_device_table(self) -> str:
+        try:
+            return format_device_table()
+        except FFmpegBinaryNotFoundError as exc:
+            LOGGER.error("FFmpeg binary unavailable while listing devices: %s", exc)
+            message = f"Unable to launch FFmpeg for device enumeration: {exc}"
+            return format_ffmpeg_error_message(self._settings.ffmpeg_binary, message)
+        except FFmpegDeviceEnumerationError as exc:
+            LOGGER.error("FFmpeg device enumeration failed: %s", exc)
+            message = f"Unable to enumerate FFmpeg audio devices: {exc}"
+            return format_ffmpeg_error_message(self._settings.ffmpeg_binary, message)
+
     def _auto_detect_working_devices(self) -> Tuple[List[DeviceInfo], str]:
         backend = (self._settings.audio_backend or "").strip().lower()
 
         if backend == "ffmpeg":
-            message = format_device_table()
+            message = self._render_device_table()
             self._info(
                 "FFmpeg audio backend active; skipping automatic device probing."
             )
@@ -1327,7 +1345,7 @@ class RecordingWindowUI:
         device_text = ScrolledText(device_frame, height=8, width=70)
         device_text.insert(
             "1.0",
-            device_report if device_report is not None else format_device_table(),
+            device_report if device_report is not None else self._render_device_table(),
         )
         device_text.configure(state="disabled")
         device_text.grid(row=0, column=0, sticky="nsew")
