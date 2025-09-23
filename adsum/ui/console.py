@@ -24,7 +24,7 @@ from ..core.audio.factory import (
     DISABLED_DEVICE_SENTINEL,
     create_capture,
 )
-from ..core.audio.ffmpeg_backend import FFmpegBinaryNotFoundError
+from ..core.audio.ffmpeg_backend import FFmpegBinaryNotFoundError, ensure_ffmpeg_available
 
 
 DEVICE_DISABLE_KEYWORDS = {"skip", "none", "off", "disabled"}
@@ -515,6 +515,69 @@ class RecordingConsoleUI:
 
         self._ffmpeg_prompted = True
         print()
+
+        settings = self._settings
+        download_url = settings.ffmpeg_download_url
+
+        if download_url:
+            choice = input(
+                "Attempt to download FFmpeg automatically using ADSUM_FFMPEG_DOWNLOAD_URL? [y/N]: "
+            ).strip().lower()
+            if choice in {"y", "yes"}:
+                self._info("Downloading FFmpeg. This may take a moment...")
+                auto_path = ensure_ffmpeg_available(settings.ffmpeg_binary)
+                if auto_path:
+                    try:
+                        updated = update_environment_setting("ffmpeg_binary", auto_path)
+                    except EnvironmentSettingError as exc:
+                        self._error(f"Failed to store FFmpeg path: {exc}")
+                    else:
+                        self._apply_settings(updated)
+                        self._info(
+                            f"FFmpeg downloaded to {auto_path} and saved to ADSUM_FFMPEG_BINARY."
+                        )
+                        return
+                else:
+                    self._error(
+                        "Automatic FFmpeg download failed. Please choose the executable manually."
+                    )
+        else:
+            remember = input(
+                "Provide an FFmpeg download URL so ADsum can manage the binary automatically? [y/N]: "
+            ).strip().lower()
+            if remember in {"y", "yes"}:
+                url_value = input(
+                    "Enter the FFmpeg download URL (use {platform} as a placeholder when needed): "
+                ).strip()
+                if url_value:
+                    try:
+                        updated_settings = update_environment_setting("ffmpeg_download_url", url_value)
+                    except EnvironmentSettingError as exc:
+                        self._error(f"Failed to store FFmpeg download URL: {exc}")
+                    else:
+                        self._apply_settings(updated_settings)
+                        self._info("Saved ADSUM_FFMPEG_DOWNLOAD_URL. Attempting download...")
+                        auto_path = ensure_ffmpeg_available(
+                            self._settings.ffmpeg_binary, download_url=url_value
+                        )
+                        if auto_path:
+                            try:
+                                updated_binary = update_environment_setting(
+                                    "ffmpeg_binary", auto_path
+                                )
+                            except EnvironmentSettingError as exc:
+                                self._error(f"Failed to store FFmpeg path: {exc}")
+                            else:
+                                self._apply_settings(updated_binary)
+                                self._info(
+                                    f"FFmpeg downloaded to {auto_path} and saved to ADSUM_FFMPEG_BINARY."
+                                )
+                                return
+                        else:
+                            self._error(
+                                "Automatic FFmpeg download failed. Please choose the executable manually."
+                            )
+
         choice = input(
             "Specify the full path to ffmpeg now? This will update ADSUM_FFMPEG_BINARY [y/N]: "
         ).strip().lower()

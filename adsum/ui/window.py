@@ -42,7 +42,7 @@ from ..core.audio.factory import (
     DISABLED_DEVICE_SENTINEL,
     create_capture,
 )
-from ..core.audio.ffmpeg_backend import FFmpegBinaryNotFoundError
+from ..core.audio.ffmpeg_backend import FFmpegBinaryNotFoundError, ensure_ffmpeg_available
 
 
 DEVICE_DISABLE_KEYWORDS = {"skip", "none", "off", "disabled"}
@@ -1728,6 +1728,79 @@ class RecordingWindowUI:
             return
 
         self._ffmpeg_prompted = True
+
+        settings = self._settings
+        download_url = settings.ffmpeg_download_url
+
+        if download_url:
+            should_download = True
+            if messagebox is not None and self._root is not None:
+                should_download = messagebox.askyesno(
+                    "Download FFmpeg",
+                    "ADsum can download FFmpeg automatically using ADSUM_FFMPEG_DOWNLOAD_URL. "
+                    "Download it now?",
+                    parent=self._root,
+                )
+            if should_download:
+                self._info("Downloading FFmpeg. This may take a moment...")
+                auto_path = ensure_ffmpeg_available(settings.ffmpeg_binary)
+                if auto_path:
+                    try:
+                        updated = update_environment_setting("ffmpeg_binary", auto_path)
+                    except EnvironmentSettingError as exc:
+                        self._error(f"Failed to store FFmpeg path: {exc}")
+                    else:
+                        self._apply_settings(updated)
+                        self._info(
+                            f"FFmpeg downloaded to {auto_path} and saved to ADSUM_FFMPEG_BINARY."
+                        )
+                        return
+                else:
+                    self._error(
+                        "Automatic FFmpeg download failed. Please choose the executable manually."
+                    )
+        else:
+            configure = False
+            if messagebox is not None and self._root is not None:
+                configure = messagebox.askyesno(
+                    "Download FFmpeg",
+                    "Provide an FFmpeg download URL so ADsum can manage updates automatically?",
+                    parent=self._root,
+                )
+            if configure and simpledialog is not None and self._root is not None:
+                url_value = simpledialog.askstring(
+                    "FFmpeg download URL",
+                    "Enter the FFmpeg download URL (use {platform} as a placeholder when needed):",
+                    parent=self._root,
+                )
+                if url_value:
+                    url_value = url_value.strip()
+                if url_value:
+                    try:
+                        updated_settings = update_environment_setting("ffmpeg_download_url", url_value)
+                    except EnvironmentSettingError as exc:
+                        self._error(f"Failed to store FFmpeg download URL: {exc}")
+                    else:
+                        self._apply_settings(updated_settings)
+                        self._info("Saved ADSUM_FFMPEG_DOWNLOAD_URL. Attempting download...")
+                        auto_path = ensure_ffmpeg_available(
+                            self._settings.ffmpeg_binary, download_url=url_value
+                        )
+                        if auto_path:
+                            try:
+                                updated = update_environment_setting("ffmpeg_binary", auto_path)
+                            except EnvironmentSettingError as exc:
+                                self._error(f"Failed to store FFmpeg path: {exc}")
+                            else:
+                                self._apply_settings(updated)
+                                self._info(
+                                    f"FFmpeg downloaded to {auto_path} and saved to ADSUM_FFMPEG_BINARY."
+                                )
+                                return
+                        else:
+                            self._error(
+                                "Automatic FFmpeg download failed. Please choose the executable manually."
+                            )
 
         if messagebox is not None and self._root is not None:
             proceed = messagebox.askyesno(

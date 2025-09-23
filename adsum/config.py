@@ -21,6 +21,7 @@ class Settings(BaseSettings):
     chunk_seconds: float = 1.0
     audio_backend: str = "ffmpeg"
     ffmpeg_binary: str = "ffmpeg"
+    ffmpeg_download_url: Optional[str] = None
     openai_transcription_model: str = "gpt-4o-mini-transcribe"
     openai_notes_model: str = "gpt-4o-mini"
     openai_api_key: Optional[str] = None
