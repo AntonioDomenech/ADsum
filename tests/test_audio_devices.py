@@ -73,6 +73,37 @@ def test_list_ffmpeg_devices_parses_dshow_output(monkeypatch: pytest.MonkeyPatch
     assert all(device.input_format == "dshow" for device in results)
 
 
+def test_list_ffmpeg_devices_handles_dshow_without_headers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Newer FFmpeg builds omit DirectShow headers but still list devices."""
+
+    listing = textwrap.dedent(
+        """
+        [dshow @ 0x123] "Integrated Webcam" (video)
+        [dshow @ 0x123]   Alternative name "@device_pnp_WEBCAM"
+        [dshow @ 0x123] "Mezcla estéreo (2- Realtek(R) Audio)" (audio)
+        [dshow @ 0x123]   Alternative name "@device_cm_{AUDIO_MIX}"
+        [dshow @ 0x123] "Varios micrófonos (2- Realtek(R) Audio)" (audio)
+        [dshow @ 0x123]   Alternative name "@device_cm_{AUDIO_MIC}"
+        Error opening input file dummy.
+        """
+    ).strip()
+
+    monkeypatch.setattr(devices, "ensure_ffmpeg_available", lambda binary: binary)
+    monkeypatch.setattr(devices, "get_settings", lambda: config.Settings(ffmpeg_binary="ffmpeg"))
+    monkeypatch.setattr(devices, "_detect_ffmpeg_platform", lambda: "windows")
+    monkeypatch.setattr(devices.subprocess, "run", lambda *_, **__: _mock_ffmpeg_run(listing))
+
+    results = devices.list_ffmpeg_devices()
+
+    assert [device.name for device in results] == [
+        "Mezcla estéreo (2- Realtek(R) Audio)",
+        "Varios micrófonos (2- Realtek(R) Audio)",
+    ]
+    assert [device.details for device in results] == ["@device_cm_{AUDIO_MIX}", "@device_cm_{AUDIO_MIC}"]
+
+
 def test_list_ffmpeg_devices_parses_avfoundation_output(monkeypatch: pytest.MonkeyPatch) -> None:
     """macOS FFmpeg listings should surface AVFoundation audio devices."""
 

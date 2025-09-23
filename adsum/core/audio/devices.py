@@ -297,21 +297,22 @@ def _parse_ffmpeg_dshow_devices(output: str) -> List[FFmpegDevice]:
         if "directshow video devices" in lowered:
             in_audio_section = False
             continue
-        if not in_audio_section:
-            continue
         alt_match = re.search(r"alternative name\s*:?-?\s*\"([^\"]+)\"", payload, re.IGNORECASE)
         if alt_match and devices:
             devices[-1].details = alt_match.group(1)
             continue
         name_match = re.search(r'"([^"]+)"', payload)
-        if name_match:
-            name = name_match.group(1)
-            device = FFmpegDevice(
-                index=len(devices),
-                name=name,
-                input_format="dshow",
-            )
-            devices.append(device)
+        if not name_match:
+            continue
+        if not in_audio_section and "(audio" not in lowered:
+            continue
+        name = name_match.group(1)
+        device = FFmpegDevice(
+            index=len(devices),
+            name=name,
+            input_format="dshow",
+        )
+        devices.append(device)
     return devices
 
 
