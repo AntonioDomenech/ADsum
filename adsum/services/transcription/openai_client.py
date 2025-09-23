@@ -241,11 +241,13 @@ class OpenAITranscriptionService(TranscriptionService):
         message = str(getattr(exc, "message", None) or exc)
         return "response_format" in message and "unsupported" in message.lower()
 
-    def _parse_transcription_response(self, response: Any) -> tuple[str, List[TranscriptSegment], Any]:
+    def _parse_transcription_response(
+        self, response: Any
+    ) -> tuple[str, List[TranscriptSegment], Optional[Dict[str, Any]]]:
         if response is None:
             return "", [], None
 
-        raw_response = response
+        raw_response: Optional[Dict[str, Any]] = None
         data: Optional[Dict[str, Any]] = None
         text = ""
         segments_data: List[Any] = []
@@ -276,24 +278,34 @@ class OpenAITranscriptionService(TranscriptionService):
         elif isinstance(response, str):
             text = response
 
+        raw_segments: List[Dict[str, Any]] = []
         segments: List[TranscriptSegment] = []
         for segment in segments_data:
             if isinstance(segment, dict):
-                segments.append(
-                    TranscriptSegment(
-                        start=segment.get("start"),
-                        end=segment.get("end"),
-                        text=(segment.get("text") or "").strip(),
-                    )
-                )
+                start = segment.get("start")
+                end = segment.get("end")
+                segment_text = str(segment.get("text") or "")
             else:
-                segments.append(
-                    TranscriptSegment(
-                        text=str(getattr(segment, "text", segment) or "").strip(),
-                        start=getattr(segment, "start", None),
-                        end=getattr(segment, "end", None),
-                    )
+                start = getattr(segment, "start", None)
+                end = getattr(segment, "end", None)
+                segment_text = str(getattr(segment, "text", segment) or "")
+
+            cleaned_text = segment_text.strip()
+            segments.append(
+                TranscriptSegment(
+                    start=start,
+                    end=end,
+                    text=cleaned_text,
                 )
+            )
+            raw_segments.append({"start": start, "end": end, "text": cleaned_text})
+
+        if isinstance(data, dict):
+            raw_response = data
+        elif text or raw_segments:
+            raw_response = {"text": text}
+            if raw_segments:
+                raw_response["segments"] = raw_segments
 
         return text, segments, raw_response
 
