@@ -34,10 +34,26 @@ class RecordingRequest:
 
 
 @dataclass
+class ChannelCaptureMetrics:
+    """Summary statistics for a recorded capture channel."""
+
+    channel: str
+    device: Optional[str]
+    sample_rate: int
+    frames: int
+    duration: float
+
+    @property
+    def is_silent(self) -> bool:
+        return self.frames <= 0 or self.duration <= 0.0
+
+
+@dataclass
 class RecordingOutcome:
     session: RecordingSession
     transcripts: Dict[str, TranscriptResult] = field(default_factory=dict)
     notes: Optional[NoteDocument] = None
+    channel_metrics: Dict[str, ChannelCaptureMetrics] = field(default_factory=dict)
 
 
 class RecordingControl:
@@ -165,7 +181,27 @@ class RecordingOrchestrator:
             for writer in writers.values():
                 writer.close()
 
-        duration_seconds = max((writer.duration_seconds for writer in writers.values()), default=0.0)
+        channel_metrics: Dict[str, ChannelCaptureMetrics] = {}
+        for channel, writer in writers.items():
+            capture = request.captures.get(channel)
+            info = getattr(capture, "info", None)
+            metrics = ChannelCaptureMetrics(
+                channel=channel,
+                device=getattr(info, "device", None),
+                sample_rate=getattr(info, "sample_rate", writer.sample_rate),
+                frames=writer.frames_written,
+                duration=writer.duration_seconds,
+            )
+            channel_metrics[channel] = metrics
+            if metrics.is_silent:
+                LOGGER.warning(
+                    "No audio captured for channel %s (device %s); output file: %s",
+                    channel,
+                    metrics.device or "unknown",
+                    capture_paths.get(channel),
+                )
+
+        duration_seconds = max((metrics.duration for metrics in channel_metrics.values()), default=0.0)
         session = RecordingSession(
             id=session_id,
             name=request.name,
@@ -179,24 +215,44 @@ class RecordingOrchestrator:
         self.store.save_session(session)
 
         mix_path: Optional[Path] = None
-        if request.mix_down and len(capture_paths) >= 1:
+        if request.mix_down and capture_paths:
             candidate_mix_path = dirs["processed"] / "mix.wav"
-            try:
-                mix_audio_files(list(capture_paths.values()), candidate_mix_path)
-            except Exception as exc:  # pragma: no cover - exercised only with problematic files
-                LOGGER.exception("Failed to mix down audio: %s", exc)
-                mix_path = None
+            non_silent_sources = [
+                capture_paths[channel]
+                for channel, metrics in channel_metrics.items()
+                if not metrics.is_silent and channel in capture_paths
+            ]
+            if not non_silent_sources:
+                LOGGER.warning("Skipping mix-down because all capture channels were silent.")
             else:
-                mix_path = candidate_mix_path
-                session.mix_path = mix_path
-                self.store.update_mix_path(session.id, mix_path)
+                try:
+                    mix_audio_files(non_silent_sources, candidate_mix_path)
+                except Exception as exc:  # pragma: no cover - exercised only with problematic files
+                    LOGGER.exception("Failed to mix down audio: %s", exc)
+                    mix_path = None
+                else:
+                    mix_path = candidate_mix_path
+                    session.mix_path = mix_path
+                    self.store.update_mix_path(session.id, mix_path)
 
         transcripts: Dict[str, TranscriptResult] = {}
-        if transcription is not None and (mix_path or capture_paths):
-            targets = [mix_path] if mix_path else list(capture_paths.values())
+        if transcription is not None:
+            targets = []
+            if mix_path is not None:
+                targets = [mix_path]
+            else:
+                targets = [
+                    capture_paths[channel]
+                    for channel, metrics in channel_metrics.items()
+                    if not metrics.is_silent and channel in capture_paths
+                ]
+
+            if not targets:
+                LOGGER.warning(
+                    "Skipping transcription for session %s because no audio data was captured.",
+                    session.id,
+                )
             for path in targets:
-                if path is None:
-                    continue
                 LOGGER.info("Transcribing %s", path)
                 latest_update: Optional[TranscriptResult] = None
 
@@ -231,10 +287,16 @@ class RecordingOrchestrator:
             note_document = notes.generate_notes(session, list(transcripts.values()))
             self.store.save_notes(note_document)
 
-        return RecordingOutcome(session=session, transcripts=transcripts, notes=note_document)
+        return RecordingOutcome(
+            session=session,
+            transcripts=transcripts,
+            notes=note_document,
+            channel_metrics=channel_metrics,
+        )
 
 
 __all__ = [
+    "ChannelCaptureMetrics",
     "RecordingControl",
     "RecordingOrchestrator",
     "RecordingRequest",
