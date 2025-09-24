@@ -33,7 +33,7 @@ from ..config import (
     list_environment_settings,
     update_environment_setting,
 )
-from ..data.models import TranscriptResult
+from ..data.models import NoteDocument, TranscriptResult
 from ..core.audio.base import AudioCapture, CaptureError
 from ..core.audio.devices import (
     DeviceInfo,
@@ -134,15 +134,33 @@ class RecordingWindowUI:
         self._pending_error: Optional[Exception] = None
         self._last_outcome: Optional[RecordingOutcome] = None
         self._fonts: Dict[str, Any] = {}
+        self._theme_mode: str = "light"
         self._theme_colors: Dict[str, str] = {}
         self._ffmpeg_prompted = False
+        self._notes_service_active = False
+        self._notes_disabled_for_session = False
 
         # Tk widgets set during run()
         self._root: Optional[tk.Tk] = None
+        self._canvas: Optional[tk.Canvas] = None
         self._status_var: Optional[tk.StringVar] = None
+        self._theme_var: Optional[tk.StringVar] = None
         self._log_widget: Optional[ScrolledText] = None
         self._transcript_widget: Optional[ScrolledText] = None
+        self._notes_title_var: Optional[tk.StringVar] = None
+        self._notes_summary_var: Optional[tk.StringVar] = None
+        self._notes_actions_var: Optional[tk.StringVar] = None
         self._refresh_job: Optional[str] = None
+
+        self._notes_title_text = "Notes preview"
+        self._notes_summary_text = (
+            "Complete a recording to generate beautifully formatted notes."
+        )
+        self._notes_actions_text = (
+            "Action items will appear here once notes are available."
+        )
+
+        self._reset_notes_preview()
 
     # ------------------------------------------------------------------
     # Public API
@@ -159,6 +177,11 @@ class RecordingWindowUI:
         self._root.protocol("WM_DELETE_WINDOW", self._on_close)
 
         self._status_var = tk.StringVar(value="No active recording.")
+        self._theme_var = tk.StringVar(value=self._theme_mode)
+        self._notes_title_var = tk.StringVar(value=self._notes_title_text)
+        self._notes_summary_var = tk.StringVar(value=self._notes_summary_text)
+        self._notes_actions_var = tk.StringVar(value=self._notes_actions_text)
+        self._refresh_notes_vars()
 
         self._configure_theme()
 
@@ -178,6 +201,7 @@ class RecordingWindowUI:
             background=canvas_bg,
         )
         canvas.grid(row=0, column=0, sticky="nsew")
+        self._canvas = canvas
 
         scrollbar = ttk.Scrollbar(scroll_container, orient="vertical", command=canvas.yview)
         scrollbar.grid(row=0, column=1, sticky="ns")
@@ -195,140 +219,64 @@ class RecordingWindowUI:
         main.bind("<Configure>", _on_main_configure)
         canvas.bind("<Configure>", _on_canvas_configure)
 
-        main.columnconfigure(0, weight=1)
-        main.rowconfigure(4, weight=1)
-        main.rowconfigure(5, weight=1)
+        main.columnconfigure(0, weight=3, uniform="layout")
+        main.columnconfigure(1, weight=2, uniform="layout")
+        main.rowconfigure(1, weight=1)
 
-        header = ttk.Label(main, text="ADsum Recorder", style="Header.TLabel")
-        header.grid(row=0, column=0, sticky="w")
+        header = ttk.Frame(main, style="Main.TFrame")
+        header.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 24))
+        header.columnconfigure(0, weight=1)
+        header.columnconfigure(1, weight=0)
 
-        subtitle = ttk.Label(
-            main,
-            text="Capture crystal-clear sessions with intuitive controls and live transcription.",
-            style="Subheader.TLabel",
-            wraplength=720,
-        )
-        subtitle.grid(row=1, column=0, sticky="w", pady=(4, 20))
-
-        status_card = ttk.Frame(main, padding=(16, 12), style="Card.TFrame")
-        status_card.grid(row=2, column=0, sticky="ew", pady=(0, 20))
-        status_card.columnconfigure(0, weight=1)
-
-        ttk.Label(status_card, text="Session status", style="CardTitle.TLabel").grid(
+        ttk.Label(header, text="ADsum Recorder", style="Header.TLabel").grid(
             row=0, column=0, sticky="w"
         )
-        ttk.Separator(status_card).grid(row=1, column=0, sticky="ew", pady=(8, 10))
-
-        status_label = ttk.Label(status_card, textvariable=self._status_var, style="StatusValue.TLabel")
-        status_label.grid(row=2, column=0, sticky="w")
-
         ttk.Label(
-            status_card,
-            text="Use Start to begin a session. Pause and Resume keep recording on your schedule.",
-            style="Body.TLabel",
-            wraplength=700,
-        ).grid(row=3, column=0, sticky="w", pady=(6, 0))
+            header,
+            text="Real-time transcription and notes meet polished recording controls.",
+            style="Subheader.TLabel",
+            wraplength=720,
+        ).grid(row=1, column=0, sticky="w", pady=(4, 0))
 
-        controls_card = ttk.Frame(main, padding=(16, 12), style="Card.TFrame")
-        controls_card.grid(row=3, column=0, sticky="ew", pady=(0, 20))
-        controls_card.columnconfigure((0, 1, 2), weight=1)
-
-        ttk.Label(controls_card, text="Quick controls", style="CardTitle.TLabel").grid(
-            row=0, column=0, columnspan=3, sticky="w"
-        )
-        ttk.Separator(controls_card).grid(row=1, column=0, columnspan=3, sticky="ew", pady=(8, 12))
-
-        self._add_button(
-            controls_card,
-            "Start",
-            self._start_recording,
-            row=2,
-            column=0,
-            style="Accent.TButton",
-        )
-        self._add_button(
-            controls_card,
-            "Pause",
-            self._pause_recording,
-            row=2,
-            column=1,
-            style="Secondary.TButton",
-        )
-        self._add_button(
-            controls_card,
-            "Resume",
-            self._resume_recording,
-            row=2,
-            column=2,
-            style="Secondary.TButton",
-        )
-        self._add_button(
-            controls_card,
-            "Stop",
-            self._stop_recording,
-            row=3,
-            column=0,
-            style="Danger.TButton",
-        )
-        self._add_button(
-            controls_card,
-            "Test",
-            self._test_devices,
-            row=3,
-            column=1,
-            style="Tertiary.TButton",
-        )
-        self._add_button(
-            controls_card,
-            "Notes",
-            self._show_notes,
-            row=3,
-            column=2,
-            style="Tertiary.TButton",
-        )
-        self._add_button(
-            controls_card,
-            "Sessions",
-            self._list_sessions,
-            row=4,
-            column=0,
-            style="Tertiary.TButton",
-        )
-        self._add_button(
-            controls_card,
-            "Devices",
-            self._show_devices,
-            row=4,
-            column=1,
-            style="Tertiary.TButton",
-        )
-        self._add_button(
-            controls_card,
-            "Environment",
-            self._configure_environment,
-            row=4,
-            column=2,
-            style="Tertiary.TButton",
-        )
-        self._add_button(
-            controls_card,
-            "Quit",
-            self._on_close,
-            row=5,
-            column=0,
-            style="Danger.TButton",
-            columnspan=3,
-        )
-
+        theme_selector = ttk.Frame(header, style="Main.TFrame")
+        theme_selector.grid(row=0, column=1, rowspan=2, sticky="e")
         ttk.Label(
-            controls_card,
-            text="Tools give you fast access to previous sessions, devices and environment settings.",
+            theme_selector,
+            text="Appearance",
             style="Caption.TLabel",
-            wraplength=700,
-        ).grid(row=6, column=0, columnspan=3, sticky="w", pady=(12, 0))
+        ).grid(row=0, column=0, columnspan=2, sticky="e", pady=(0, 6))
 
-        transcript_card = ttk.Frame(main, padding=(16, 12), style="Card.TFrame")
-        transcript_card.grid(row=4, column=0, sticky="nsew", pady=(0, 20))
+        ttk.Radiobutton(
+            theme_selector,
+            text="Light",
+            value="light",
+            variable=self._theme_var,
+            command=self._on_theme_toggle,
+            style="Theme.TRadiobutton",
+        ).grid(row=1, column=0, sticky="e", padx=(0, 8))
+        ttk.Radiobutton(
+            theme_selector,
+            text="Dark",
+            value="dark",
+            variable=self._theme_var,
+            command=self._on_theme_toggle,
+            style="Theme.TRadiobutton",
+        ).grid(row=1, column=1, sticky="e")
+
+        primary = ttk.Frame(main, style="Main.TFrame")
+        primary.grid(row=1, column=0, sticky="nsew", padx=(0, 24))
+        primary.columnconfigure(0, weight=1)
+        primary.rowconfigure(0, weight=3)
+        primary.rowconfigure(1, weight=1)
+        primary.rowconfigure(2, weight=2)
+
+        sidebar = ttk.Frame(main, style="Main.TFrame")
+        sidebar.grid(row=1, column=1, sticky="nsew")
+        sidebar.columnconfigure(0, weight=1)
+        sidebar.rowconfigure(1, weight=1)
+
+        transcript_card = ttk.Frame(primary, padding=(16, 12), style="Card.TFrame")
+        transcript_card.grid(row=0, column=0, sticky="nsew", pady=(0, 20))
         transcript_card.columnconfigure(0, weight=1)
         transcript_card.rowconfigure(2, weight=1)
 
@@ -339,7 +287,7 @@ class RecordingWindowUI:
 
         self._transcript_widget = ScrolledText(
             transcript_card,
-            height=8,
+            height=12,
             width=80,
             state="disabled",
             wrap="word",
@@ -353,12 +301,46 @@ class RecordingWindowUI:
             spacing3=6,
             padx=12,
             pady=12,
-            background="#ffffff",
-            insertbackground="#0f172a",
+            insertbackground=self._theme_colors.get("text_primary", "#0f172a"),
         )
 
-        log_card = ttk.Frame(main, padding=(16, 12), style="Card.TFrame")
-        log_card.grid(row=5, column=0, sticky="nsew")
+        notes_card = ttk.Frame(primary, padding=(16, 12), style="Card.TFrame")
+        notes_card.grid(row=1, column=0, sticky="ew", pady=(0, 20))
+        notes_card.columnconfigure(0, weight=1)
+        notes_card.columnconfigure(1, weight=0)
+
+        ttk.Label(notes_card, textvariable=self._notes_title_var, style="CardTitle.TLabel").grid(
+            row=0, column=0, sticky="w"
+        )
+        ttk.Button(
+            notes_card,
+            text="View full notes",
+            command=self._show_notes,
+            style="Tertiary.TButton",
+        ).grid(row=0, column=1, sticky="e")
+        ttk.Separator(notes_card).grid(row=1, column=0, columnspan=2, sticky="ew", pady=(8, 10))
+        ttk.Label(
+            notes_card,
+            textvariable=self._notes_summary_var,
+            style="Body.TLabel",
+            wraplength=640,
+            justify="left",
+        ).grid(row=2, column=0, columnspan=2, sticky="w")
+        ttk.Label(
+            notes_card,
+            text="Action items",
+            style="CardSubheading.TLabel",
+        ).grid(row=3, column=0, columnspan=2, sticky="w", pady=(12, 4))
+        ttk.Label(
+            notes_card,
+            textvariable=self._notes_actions_var,
+            style="Body.TLabel",
+            wraplength=640,
+            justify="left",
+        ).grid(row=4, column=0, columnspan=2, sticky="w")
+
+        log_card = ttk.Frame(primary, padding=(16, 12), style="Card.TFrame")
+        log_card.grid(row=2, column=0, sticky="nsew")
         log_card.columnconfigure(0, weight=1)
         log_card.rowconfigure(2, weight=1)
 
@@ -369,7 +351,7 @@ class RecordingWindowUI:
 
         self._log_widget = ScrolledText(
             log_card,
-            height=12,
+            height=10,
             width=80,
             state="disabled",
             wrap="word",
@@ -383,9 +365,88 @@ class RecordingWindowUI:
             spacing3=4,
             padx=12,
             pady=12,
-            background="#ffffff",
-            insertbackground="#0f172a",
+            insertbackground=self._theme_colors.get("text_primary", "#0f172a"),
         )
+
+        status_card = ttk.Frame(sidebar, padding=(16, 12), style="Card.TFrame")
+        status_card.grid(row=0, column=0, sticky="ew", pady=(0, 20))
+        status_card.columnconfigure(0, weight=1)
+
+        ttk.Label(status_card, text="Session status", style="CardTitle.TLabel").grid(
+            row=0, column=0, sticky="w"
+        )
+        ttk.Separator(status_card).grid(row=1, column=0, sticky="ew", pady=(8, 10))
+        ttk.Label(
+            status_card,
+            textvariable=self._status_var,
+            style="StatusValue.TLabel",
+            wraplength=280,
+            justify="left",
+        ).grid(row=2, column=0, sticky="w")
+        ttk.Label(
+            status_card,
+            text="Monitor progress while transcripts and notes refresh automatically.",
+            style="Body.TLabel",
+            wraplength=280,
+        ).grid(row=3, column=0, sticky="w", pady=(6, 0))
+
+        controls_card = ttk.Frame(sidebar, padding=(16, 12), style="Card.TFrame")
+        controls_card.grid(row=1, column=0, sticky="nsew")
+        controls_card.columnconfigure(0, weight=1)
+
+        ttk.Label(controls_card, text="Quick controls", style="CardTitle.TLabel").grid(
+            row=0, column=0, sticky="w"
+        )
+        ttk.Separator(controls_card).grid(row=1, column=0, sticky="ew", pady=(8, 12))
+
+        primary_actions = [
+            ("Start session", self._start_recording, "Accent.TButton"),
+            ("Pause", self._pause_recording, "Secondary.TButton"),
+            ("Resume", self._resume_recording, "Secondary.TButton"),
+            ("Stop", self._stop_recording, "Danger.TButton"),
+        ]
+        row_index = 2
+        for label, command, style_name in primary_actions:
+            self._add_button(
+                controls_card,
+                label,
+                command,
+                row=row_index,
+                column=0,
+                style=style_name,
+            )
+            row_index += 1
+
+        ttk.Separator(controls_card).grid(row=row_index, column=0, sticky="ew", pady=(8, 12))
+        row_index += 1
+
+        tool_actions = [
+            ("Test audio", self._test_devices, "Tertiary.TButton"),
+            ("Open notes", self._show_notes, "Tertiary.TButton"),
+            ("Sessions", self._list_sessions, "Tertiary.TButton"),
+            ("Devices", self._show_devices, "Tertiary.TButton"),
+            ("Environment", self._configure_environment, "Tertiary.TButton"),
+            ("Quit ADsum", self._on_close, "Danger.TButton"),
+        ]
+        for label, command, style_name in tool_actions:
+            self._add_button(
+                controls_card,
+                label,
+                command,
+                row=row_index,
+                column=0,
+                style=style_name,
+            )
+            row_index += 1
+
+        ttk.Label(
+            controls_card,
+            text="Explore tools to validate devices, revisit sessions and fine-tune the environment.",
+            style="Caption.TLabel",
+            wraplength=280,
+        ).grid(row=row_index, column=0, sticky="w", pady=(12, 0))
+
+        self._apply_theme_to_widgets()
 
         self._info("Launching ADsum window UI. Close the window to exit.")
         self._restore_last_session_transcripts()
@@ -421,8 +482,8 @@ class RecordingWindowUI:
             column=column,
             columnspan=columnspan,
             sticky="ew",
-            padx=6,
-            pady=6,
+            padx=4,
+            pady=4,
         )
 
     def _schedule_refresh(self) -> None:
@@ -434,37 +495,83 @@ class RecordingWindowUI:
         if not self._root:
             return
 
-        base_bg = "#f5f7fa"
-        card_bg = "#ffffff"
-        accent = "#2563eb"
-        accent_active = "#1d4ed8"
-        accent_disabled = "#93c5fd"
-        secondary_bg = "#e2e8f0"
-        secondary_active = "#cbd5f5"
-        tertiary_bg = "#f1f5f9"
-        danger = "#ef4444"
-        danger_active = "#dc2626"
-        danger_disabled = "#fecaca"
-
-        self._theme_colors = {
-            "base_bg": base_bg,
-            "card_bg": card_bg,
-            "accent": accent,
-            "accent_active": accent_active,
-            "accent_disabled": accent_disabled,
-            "secondary_bg": secondary_bg,
-            "secondary_active": secondary_active,
-            "tertiary_bg": tertiary_bg,
-            "danger": danger,
-            "danger_active": danger_active,
-            "danger_disabled": danger_disabled,
-        }
-
         style = ttk.Style(self._root)
         try:
             style.theme_use("clam")
         except tk.TclError:  # pragma: no cover - depends on available Tk themes
             pass
+
+        if self._theme_mode == "dark":
+            colors = {
+                "base_bg": "#0f172a",
+                "card_bg": "#111827",
+                "card_border": "#1e293b",
+                "text_primary": "#f8fafc",
+                "text_secondary": "#e2e8f0",
+                "text_muted": "#94a3b8",
+                "caption": "#94a3b8",
+                "status": "#38bdf8",
+                "accent": "#3b82f6",
+                "accent_active": "#2563eb",
+                "accent_disabled": "#1e3a8a",
+                "secondary_bg": "#1e293b",
+                "secondary_active": "#334155",
+                "secondary_fg": "#e2e8f0",
+                "tertiary_bg": "#1f2937",
+                "danger": "#ef4444",
+                "danger_active": "#dc2626",
+                "danger_disabled": "#7f1d1d",
+                "divider": "#1e293b",
+                "outline": "#1e293b",
+                "radiobutton_fg": "#f8fafc",
+            }
+        else:
+            colors = {
+                "base_bg": "#f5f7fa",
+                "card_bg": "#ffffff",
+                "card_border": "#e2e8f0",
+                "text_primary": "#0f172a",
+                "text_secondary": "#475569",
+                "text_muted": "#64748b",
+                "caption": "#64748b",
+                "status": "#2563eb",
+                "accent": "#2563eb",
+                "accent_active": "#1d4ed8",
+                "accent_disabled": "#93c5fd",
+                "secondary_bg": "#e2e8f0",
+                "secondary_active": "#cbd5f5",
+                "secondary_fg": "#0f172a",
+                "tertiary_bg": "#f1f5f9",
+                "danger": "#ef4444",
+                "danger_active": "#dc2626",
+                "danger_disabled": "#fecaca",
+                "divider": "#e2e8f0",
+                "outline": "#cbd5f5",
+                "radiobutton_fg": "#0f172a",
+            }
+
+        self._theme_colors = colors
+
+        base_bg = colors["base_bg"]
+        card_bg = colors["card_bg"]
+        text_primary = colors["text_primary"]
+        text_secondary = colors["text_secondary"]
+        text_muted = colors["text_muted"]
+        caption_color = colors["caption"]
+        status_color = colors["status"]
+        accent = colors["accent"]
+        accent_active = colors["accent_active"]
+        accent_disabled = colors["accent_disabled"]
+        secondary_bg = colors["secondary_bg"]
+        secondary_active = colors["secondary_active"]
+        secondary_fg = colors["secondary_fg"]
+        tertiary_bg = colors["tertiary_bg"]
+        danger = colors["danger"]
+        danger_active = colors["danger_active"]
+        danger_disabled = colors["danger_disabled"]
+        divider = colors["divider"]
+        outline = colors["outline"]
+        radiobutton_fg = colors["radiobutton_fg"]
 
         self._root.configure(background=base_bg)
 
@@ -474,6 +581,7 @@ class RecordingWindowUI:
         subheader_font: Any = ("Arial", 11)
         header_font: Any = ("Arial", 22, "bold")
         card_title_font: Any = ("Arial", 12, "bold")
+        card_subheading_font: Any = ("Arial", 10, "bold")
         status_font: Any = ("Arial", 12, "bold")
         button_font: Any = ("Arial", 10, "bold")
 
@@ -486,6 +594,7 @@ class RecordingWindowUI:
                 header_font = tkfont.Font(root=self._root, family=font_family, size=22, weight="bold")
                 subheader_font = tkfont.Font(root=self._root, family=font_family, size=11)
                 card_title_font = tkfont.Font(root=self._root, family=font_family, size=12, weight="bold")
+                card_subheading_font = tkfont.Font(root=self._root, family=font_family, size=10, weight="bold")
                 body_font = tkfont.Font(root=self._root, family=font_family, size=10)
                 caption_font = tkfont.Font(root=self._root, family=font_family, size=9)
                 status_font = tkfont.Font(root=self._root, family=font_family, size=12, weight="bold")
@@ -496,6 +605,7 @@ class RecordingWindowUI:
                         "header": header_font,
                         "subheader": subheader_font,
                         "card_title": card_title_font,
+                        "card_subheading": card_subheading_font,
                         "body": body_font,
                         "caption": caption_font,
                         "status": status_font,
@@ -508,46 +618,80 @@ class RecordingWindowUI:
 
         style.configure("Main.TFrame", background=base_bg)
         style.configure("Card.TFrame", background=card_bg, relief="flat", borderwidth=0)
+        style.configure("Dialog.TFrame", background=card_bg, relief="flat", borderwidth=0)
+        style.configure("TSeparator", background=divider)
+
         style.configure(
             "Header.TLabel",
             background=base_bg,
-            foreground="#0f172a",
+            foreground=text_primary,
             font=self._fonts.get("header", header_font),
         )
         style.configure(
             "Subheader.TLabel",
             background=base_bg,
-            foreground="#475569",
+            foreground=text_secondary,
             font=self._fonts.get("subheader", subheader_font),
         )
         style.configure(
             "CardTitle.TLabel",
             background=card_bg,
-            foreground="#0f172a",
+            foreground=text_primary,
             font=self._fonts.get("card_title", card_title_font),
+        )
+        style.configure(
+            "CardSubheading.TLabel",
+            background=card_bg,
+            foreground=text_muted,
+            font=self._fonts.get("card_subheading", card_subheading_font),
         )
         style.configure(
             "Body.TLabel",
             background=card_bg,
-            foreground="#475569",
+            foreground=text_secondary,
             font=self._fonts.get("body", body_font),
         )
         style.configure(
             "Caption.TLabel",
             background=card_bg,
-            foreground="#64748b",
+            foreground=caption_color,
             font=self._fonts.get("caption", caption_font),
         )
         style.configure(
             "StatusValue.TLabel",
             background=card_bg,
-            foreground=accent,
+            foreground=status_color,
             font=self._fonts.get("status", status_font),
+        )
+        style.configure(
+            "DialogHeading.TLabel",
+            background=card_bg,
+            foreground=text_primary,
+            font=self._fonts.get("card_title", card_title_font),
+        )
+        style.configure(
+            "DialogBody.TLabel",
+            background=card_bg,
+            foreground=text_secondary,
+            font=self._fonts.get("body", body_font),
+        )
+
+        style.configure(
+            "Theme.TRadiobutton",
+            background=base_bg,
+            foreground=radiobutton_fg,
+            font=self._fonts.get("body", body_font),
+            indicatorcolor=accent,
+            borderwidth=0,
+        )
+        style.map(
+            "Theme.TRadiobutton",
+            foreground=[("selected", accent), ("active", accent)],
         )
 
         style.configure(
             "TButton",
-            padding=(12, 10),
+            padding=(10, 6),
             font=self._fonts.get("button", button_font),
             borderwidth=0,
         )
@@ -560,18 +704,18 @@ class RecordingWindowUI:
             foreground=[("disabled", "#e2e8f0")],
         )
 
-        style.configure("Secondary.TButton", background=secondary_bg, foreground="#0f172a")
+        style.configure("Secondary.TButton", background=secondary_bg, foreground=secondary_fg)
         style.map(
             "Secondary.TButton",
             background=[("active", secondary_active)],
-            foreground=[("disabled", "#94a3b8")],
+            foreground=[("disabled", text_muted)],
         )
 
-        style.configure("Tertiary.TButton", background=tertiary_bg, foreground="#0f172a")
+        style.configure("Tertiary.TButton", background=tertiary_bg, foreground=secondary_fg)
         style.map(
             "Tertiary.TButton",
             background=[("active", secondary_bg)],
-            foreground=[("disabled", "#94a3b8")],
+            foreground=[("disabled", text_muted)],
         )
 
         style.configure("Danger.TButton", background=danger, foreground="#ffffff")
@@ -580,6 +724,56 @@ class RecordingWindowUI:
             background=[("active", danger_active), ("disabled", danger_disabled)],
             foreground=[("disabled", "#fee2e2")],
         )
+
+    def _apply_theme_to_widgets(self) -> None:
+        if not self._root:
+            return
+
+        colors = self._theme_colors or {}
+        base_bg = colors.get("base_bg", "#f5f7fa")
+        card_bg = colors.get("card_bg", "#ffffff")
+        text_primary = colors.get("text_primary", "#0f172a")
+        text_secondary = colors.get("text_secondary", "#475569")
+        accent = colors.get("accent", "#2563eb")
+        outline = colors.get("outline", "#cbd5f5")
+
+        if self._canvas is not None:
+            self._canvas.configure(background=base_bg)
+
+        text_widgets = [
+            (self._transcript_widget, text_primary),
+            (self._log_widget, text_secondary),
+        ]
+        for widget, foreground in text_widgets:
+            if widget is None:
+                continue
+            widget.configure(
+                background=card_bg,
+                foreground=foreground,
+                insertbackground=text_primary,
+                selectbackground=accent,
+                selectforeground="#ffffff",
+                highlightbackground=outline,
+                highlightcolor=outline,
+                highlightthickness=1,
+                bd=0,
+                relief="flat",
+            )
+
+    def _set_theme_mode(self, mode: str, *, update_var: bool = False) -> None:
+        target = "dark" if mode == "dark" else "light"
+        if target == self._theme_mode:
+            return
+        self._theme_mode = target
+        if update_var and self._theme_var is not None:
+            self._theme_var.set(target)
+        self._configure_theme()
+        self._apply_theme_to_widgets()
+
+    def _on_theme_toggle(self) -> None:
+        if not self._theme_var:
+            return
+        self._set_theme_mode(self._theme_var.get())
 
     def _on_periodic_update(self) -> None:
         if not self._root or not self._root.winfo_exists():
@@ -678,6 +872,79 @@ class RecordingWindowUI:
             except queue.Empty:
                 break
 
+    # ------------------------------------------------------------------
+    # Notes visualisation
+    # ------------------------------------------------------------------
+    def _refresh_notes_vars(self) -> None:
+        if self._notes_title_var is not None:
+            self._notes_title_var.set(self._notes_title_text)
+        if self._notes_summary_var is not None:
+            self._notes_summary_var.set(self._notes_summary_text)
+        if self._notes_actions_var is not None:
+            self._notes_actions_var.set(self._notes_actions_text)
+
+    def _set_notes_preview(self, title: str, summary: str, actions: str) -> None:
+        self._notes_title_text = title
+        self._notes_summary_text = summary
+        self._notes_actions_text = actions
+        self._refresh_notes_vars()
+
+    def _reset_notes_preview(self) -> None:
+        self._notes_service_active = False
+        self._notes_disabled_for_session = False
+        self._set_notes_preview(
+            "Notes preview",
+            "Complete a recording to generate beautifully formatted notes.",
+            "Action items will appear here once notes are available.",
+        )
+
+    def _set_notes_pending_state(self) -> None:
+        self._notes_service_active = True
+        self._notes_disabled_for_session = False
+        self._set_notes_preview(
+            "Notes preview",
+            "Notes will be generated automatically when the session finishes.",
+            "Action items will populate here as soon as notes are ready.",
+        )
+
+    def _set_notes_disabled_state(self) -> None:
+        self._notes_service_active = False
+        self._notes_disabled_for_session = True
+        self._set_notes_preview(
+            "Notes preview",
+            "Notes are disabled for this session.",
+            "Enable a notes service in recording options to capture action items.",
+        )
+
+    def _update_notes_content(self, notes: Optional[NoteDocument]) -> None:
+        if not notes:
+            if self._notes_disabled_for_session:
+                self._set_notes_disabled_state()
+            elif self._notes_service_active:
+                self._set_notes_preview(
+                    "Notes preview",
+                    "No notes were generated for the most recent session.",
+                    "Verify the notes service configuration or try recording again.",
+                )
+            else:
+                self._set_notes_preview(
+                    "Notes preview",
+                    "No notes are available for the most recent session yet.",
+                    "Start a new recording with notes enabled to generate summaries automatically.",
+                )
+            return
+
+        title = notes.title.strip() or "Notes preview"
+        summary = notes.summary.strip() or "No summary available."
+        if notes.action_items:
+            actions = "\n".join(f"• {item}" for item in notes.action_items)
+        else:
+            actions = "No action items recorded."
+
+        self._notes_service_active = True
+        self._notes_disabled_for_session = False
+        self._set_notes_preview(title, summary, actions)
+
     def _restore_last_session_transcripts(self) -> None:
         sessions = self._orchestrator.store.list_sessions(limit=1)
         if not sessions:
@@ -700,6 +967,8 @@ class RecordingWindowUI:
             self._info(
                 f"Most recent session '{session.name}' has no transcription to display yet."
             )
+
+        self._update_notes_content(notes)
 
         self._last_outcome = RecordingOutcome(
             session=session,
@@ -819,6 +1088,11 @@ class RecordingWindowUI:
             else:
                 self._reset_transcription_view("Recording... awaiting transcription results.")
 
+            if notes is None:
+                self._set_notes_disabled_state()
+            else:
+                self._set_notes_pending_state()
+
             request = RecordingRequest(name=name, captures=captures, mix_down=mix_down)
             control = RecordingControl()
 
@@ -934,18 +1208,38 @@ class RecordingWindowUI:
 
         assert tk is not None and ttk is not None
 
-        window = tk.Toplevel(self._root)
-        window.title("Environment configuration")
-        window.transient(self._root)
-        window.grab_set()
+        window, body = self._create_dialog_window("Environment configuration", modal=True)
+        body.rowconfigure(2, weight=1)
+
+        ttk.Label(body, text="Environment configuration", style="DialogHeading.TLabel").grid(
+            row=0, column=0, sticky="w"
+        )
+        ttk.Label(
+            body,
+            text="Review and update the environment variables that fine-tune ADsum.",
+            style="DialogBody.TLabel",
+            wraplength=520,
+        ).grid(row=1, column=0, sticky="w", pady=(8, 12))
 
         list_var = tk.StringVar(value=[self._format_setting_entry(entry) for entry in settings_entries])
 
-        listbox = tk.Listbox(window, listvariable=list_var, height=min(len(settings_entries), 12), width=80)
-        listbox.grid(row=0, column=0, columnspan=3, padx=12, pady=(12, 6), sticky="nsew")
-
-        window.columnconfigure(0, weight=1)
-        window.rowconfigure(0, weight=1)
+        listbox = tk.Listbox(
+            body,
+            listvariable=list_var,
+            height=min(len(settings_entries), 12),
+            width=80,
+        )
+        listbox.grid(row=2, column=0, sticky="nsew")
+        listbox.configure(
+            background=self._theme_colors.get("card_bg", "#ffffff"),
+            foreground=self._theme_colors.get("text_primary", "#0f172a"),
+            highlightbackground=self._theme_colors.get("outline", "#cbd5f5"),
+            highlightcolor=self._theme_colors.get("outline", "#cbd5f5"),
+            selectbackground=self._theme_colors.get("accent", "#2563eb"),
+            selectforeground="#ffffff",
+            relief="flat",
+            borderwidth=1,
+        )
 
         def refresh_entries() -> None:
             nonlocal settings_entries
@@ -1012,14 +1306,17 @@ class RecordingWindowUI:
             )
             refresh_entries()
 
-        update_button = ttk.Button(window, text="Update", command=update_selected)
-        update_button.grid(row=1, column=0, padx=12, pady=(0, 12), sticky="w")
-
-        reset_button = ttk.Button(window, text="Reset", command=reset_selected)
-        reset_button.grid(row=1, column=1, padx=12, pady=(0, 12))
-
-        close_button = ttk.Button(window, text="Close", command=window.destroy)
-        close_button.grid(row=1, column=2, padx=12, pady=(0, 12), sticky="e")
+        actions = ttk.Frame(body, style="Dialog.TFrame")
+        actions.grid(row=3, column=0, sticky="e", pady=(12, 0))
+        ttk.Button(actions, text="Update", command=update_selected, style="Secondary.TButton").grid(
+            row=0, column=0, padx=(0, 8)
+        )
+        ttk.Button(actions, text="Reset", command=reset_selected, style="Tertiary.TButton").grid(
+            row=0, column=1, padx=(0, 8)
+        )
+        ttk.Button(actions, text="Close", command=window.destroy, style="Secondary.TButton").grid(
+            row=0, column=2
+        )
 
         window.wait_window()
 
@@ -1242,21 +1539,12 @@ class RecordingWindowUI:
         option_labels = list(option_map.keys())
         allowed_values = set(option_map.values())
 
-        window = tk.Toplevel(self._root)
-        window.title("Recording options")
-        window.transient(self._root)
-        window.grab_set()
-
-        window.columnconfigure(0, weight=1)
-        window.rowconfigure(0, weight=1)
-
-        main = ttk.Frame(window, padding=(20, 16))
-        main.grid(row=0, column=0, sticky="nsew")
+        window, main = self._create_dialog_window("Recording options", modal=True)
         main.columnconfigure(1, weight=1)
         preview_text: Optional[ScrolledText] = None
 
-        preview_row = 6 if ffmpeg_backend_active else None
-        device_row = 7 if ffmpeg_backend_active else 6
+        preview_row = 7 if ffmpeg_backend_active else None
+        device_row = 8 if ffmpeg_backend_active else 7
         button_row = device_row + 1
 
         rows_to_expand = [device_row]
@@ -1265,12 +1553,15 @@ class RecordingWindowUI:
         for row_index in rows_to_expand:
             main.rowconfigure(row_index, weight=1)
 
+        ttk.Label(main, text="Recording options", style="DialogHeading.TLabel").grid(
+            row=0, column=0, columnspan=2, sticky="w"
+        )
         ttk.Label(
             main,
             text="Choose the audio sources and services for this session.",
-            style="Body.TLabel",
+            style="DialogBody.TLabel",
             wraplength=520,
-        ).grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 12))
+        ).grid(row=1, column=0, columnspan=2, sticky="w", pady=(8, 16))
 
         normalized_mic = self._normalize_device_value(current_mic)
         normalized_system = self._normalize_device_value(current_system)
@@ -1298,7 +1589,7 @@ class RecordingWindowUI:
             combo_state = "readonly" if available_devices is not None else "normal"
 
         ttk.Label(main, text="Microphone input", style="CardTitle.TLabel").grid(
-            row=1, column=0, sticky="w"
+            row=2, column=0, sticky="w"
         )
         ttk.Combobox(
             main,
@@ -1306,10 +1597,10 @@ class RecordingWindowUI:
             values=option_labels,
             width=45,
             state=combo_state,
-        ).grid(row=1, column=1, sticky="ew", padx=(12, 0))
+        ).grid(row=2, column=1, sticky="ew", padx=(12, 0))
 
         ttk.Label(main, text="System audio", style="CardTitle.TLabel").grid(
-            row=2, column=0, sticky="w", pady=(8, 0)
+            row=3, column=0, sticky="w", pady=(8, 0)
         )
         ttk.Combobox(
             main,
@@ -1317,18 +1608,18 @@ class RecordingWindowUI:
             values=option_labels,
             width=45,
             state=combo_state,
-        ).grid(row=2, column=1, sticky="ew", padx=(12, 0), pady=(8, 0))
+        ).grid(row=3, column=1, sticky="ew", padx=(12, 0), pady=(8, 0))
 
         ttk.Checkbutton(
             main,
             text="Create a mixed track combining all active inputs",
             variable=mix_var,
-        ).grid(row=3, column=0, columnspan=2, sticky="w", pady=(12, 0))
+        ).grid(row=4, column=0, columnspan=2, sticky="w", pady=(12, 0))
 
         backend_options = ("none", "dummy", "openai")
 
         ttk.Label(main, text="Transcription backend", style="CardTitle.TLabel").grid(
-            row=4, column=0, sticky="w", pady=(16, 0)
+            row=5, column=0, sticky="w", pady=(16, 0)
         )
         ttk.Combobox(
             main,
@@ -1336,10 +1627,10 @@ class RecordingWindowUI:
             values=backend_options,
             width=20,
             state="normal",
-        ).grid(row=4, column=1, sticky="w", padx=(12, 0), pady=(16, 0))
+        ).grid(row=5, column=1, sticky="w", padx=(12, 0), pady=(16, 0))
 
         ttk.Label(main, text="Notes backend", style="CardTitle.TLabel").grid(
-            row=5, column=0, sticky="w", pady=(8, 0)
+            row=6, column=0, sticky="w", pady=(8, 0)
         )
         ttk.Combobox(
             main,
@@ -1347,7 +1638,7 @@ class RecordingWindowUI:
             values=backend_options,
             width=20,
             state="normal",
-        ).grid(row=5, column=1, sticky="w", padx=(12, 0), pady=(8, 0))
+        ).grid(row=6, column=1, sticky="w", padx=(12, 0), pady=(8, 0))
 
         if ffmpeg_backend_active and preview_row is not None:
             preview_frame = ttk.LabelFrame(
@@ -1359,7 +1650,16 @@ class RecordingWindowUI:
             preview_frame.columnconfigure(0, weight=1)
 
             preview_text = ScrolledText(preview_frame, height=10, width=70)
-            preview_text.configure(state="disabled")
+            preview_text.configure(
+                state="disabled",
+                background=self._theme_colors.get("card_bg", "#ffffff"),
+                foreground=self._theme_colors.get("text_secondary", "#475569"),
+                wrap="word",
+                highlightbackground=self._theme_colors.get("outline", "#cbd5f5"),
+                highlightcolor=self._theme_colors.get("outline", "#cbd5f5"),
+                highlightthickness=1,
+                relief="flat",
+            )
             preview_text.grid(row=0, column=0, sticky="nsew")
 
         device_frame = ttk.LabelFrame(main, text="Detected devices", padding=(12, 10))
@@ -1373,7 +1673,16 @@ class RecordingWindowUI:
             "1.0",
             device_report if device_report is not None else self._render_device_table(),
         )
-        device_text.configure(state="disabled")
+        device_text.configure(
+            state="disabled",
+            background=self._theme_colors.get("card_bg", "#ffffff"),
+            foreground=self._theme_colors.get("text_secondary", "#475569"),
+            wrap="word",
+            highlightbackground=self._theme_colors.get("outline", "#cbd5f5"),
+            highlightcolor=self._theme_colors.get("outline", "#cbd5f5"),
+            highlightthickness=1,
+            relief="flat",
+        )
         device_text.grid(row=0, column=0, sticky="nsew")
 
         if ffmpeg_backend_active and preview_text is not None:
@@ -1404,7 +1713,7 @@ class RecordingWindowUI:
             system_var.trace_add("write", _on_preview_change)
             _refresh_ffmpeg_preview()
 
-        button_frame = ttk.Frame(main)
+        button_frame = ttk.Frame(main, style="Dialog.TFrame")
         button_frame.grid(row=button_row, column=0, columnspan=2, sticky="e", pady=(16, 0))
 
         confirmed = {"value": False}
@@ -1417,10 +1726,20 @@ class RecordingWindowUI:
             confirmed["value"] = True
             window.destroy()
 
-        ttk.Button(button_frame, text="Cancel", command=on_cancel).grid(
+        ttk.Button(
+            button_frame,
+            text="Cancel",
+            command=on_cancel,
+            style="Tertiary.TButton",
+        ).grid(
             row=0, column=0, padx=(0, 8)
         )
-        ttk.Button(button_frame, text="Continue", command=on_confirm).grid(row=0, column=1)
+        ttk.Button(
+            button_frame,
+            text="Continue",
+            command=on_confirm,
+            style="Accent.TButton",
+        ).grid(row=0, column=1)
 
         window.protocol("WM_DELETE_WINDOW", on_cancel)
         window.wait_window()
@@ -1684,21 +2003,68 @@ class RecordingWindowUI:
             with contextlib.suppress(Exception):
                 capture.close()
 
-    def _show_text_window(self, title: str, content: str) -> None:
-        if not self._root:
-            return
+    def _create_dialog_window(
+        self,
+        title: str,
+        *,
+        modal: bool = True,
+        minsize: Optional[Tuple[int, int]] = None,
+    ) -> Tuple["tk.Toplevel", "ttk.Frame"]:
+        assert self._root is not None and ttk is not None
+
         window = tk.Toplevel(self._root)
         window.title(title)
         window.transient(self._root)
-        window.grab_set()
+        if modal:
+            window.grab_set()
+        window.configure(background=self._theme_colors.get("base_bg", "#f5f7fa"))
+        if minsize:
+            window.minsize(*minsize)
+        window.columnconfigure(0, weight=1)
+        window.rowconfigure(0, weight=1)
 
-        text = ScrolledText(window, width=90, height=24, state="normal")
+        container = ttk.Frame(window, padding=(24, 20), style="Dialog.TFrame")
+        container.grid(row=0, column=0, sticky="nsew")
+        container.columnconfigure(0, weight=1)
+        return window, container
+
+    def _show_text_window(self, title: str, content: str) -> None:
+        if not self._root:
+            return
+        window, body = self._create_dialog_window(title, modal=True)
+        body.rowconfigure(1, weight=1)
+
+        ttk.Label(body, text=title, style="DialogHeading.TLabel").grid(
+            row=0, column=0, sticky="w"
+        )
+
+        text = ScrolledText(
+            body,
+            width=90,
+            height=24,
+            state="normal",
+            wrap="word",
+            borderwidth=0,
+            highlightthickness=0,
+        )
+        text.grid(row=1, column=0, sticky="nsew", pady=(12, 12))
         text.insert("1.0", content)
         text.configure(state="disabled")
-        text.pack(fill="both", expand=True, padx=12, pady=12)
+        text.configure(
+            background=self._theme_colors.get("card_bg", "#ffffff"),
+            foreground=self._theme_colors.get("text_secondary", "#475569"),
+            insertbackground=self._theme_colors.get("text_primary", "#0f172a"),
+            highlightbackground=self._theme_colors.get("outline", "#cbd5f5"),
+            highlightcolor=self._theme_colors.get("outline", "#cbd5f5"),
+            highlightthickness=1,
+            relief="flat",
+            padx=12,
+            pady=12,
+        )
 
-        button = ttk.Button(window, text="Close", command=window.destroy)
-        button.pack(pady=(0, 12))
+        ttk.Button(body, text="Close", command=window.destroy, style="Secondary.TButton").grid(
+            row=2, column=0, sticky="e"
+        )
 
         window.wait_window()
 
@@ -1804,6 +2170,7 @@ class RecordingWindowUI:
                     self._update_transcription_status(
                         "No transcription available for this session."
                     )
+                self._update_notes_content(self._pending_outcome.notes)
                 if self._pending_outcome.notes:
                     self._info("Notes summary available via the Notes button.")
             self._pending_error = None
