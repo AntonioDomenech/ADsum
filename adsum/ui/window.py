@@ -1774,6 +1774,19 @@ class RecordingWindowUI:
                 self._last_outcome = self._pending_outcome
                 summary = f"Session saved at {self._pending_outcome.session.id}"
                 self._info(summary)
+                if self._pending_outcome.channel_metrics:
+                    for metrics in self._pending_outcome.channel_metrics.values():
+                        if getattr(metrics, "is_silent", False):
+                            device_label = metrics.device or "unknown device"
+                            audio_path = self._pending_outcome.session.audio_paths.get(
+                                metrics.channel
+                            )
+                            path_hint = f" ({audio_path})" if audio_path else ""
+                            self._warning(
+                                "No audio was captured from "
+                                f"{metrics.channel} ({device_label}){path_hint}. "
+                                "Please check the device before recording again."
+                            )
                 if self._pending_outcome.transcripts:
                     counts = ", ".join(
                         f"{ch}: {len(result.text.split())} words"
@@ -1935,6 +1948,12 @@ class RecordingWindowUI:
     def _info(self, message: str) -> None:
         self._messages.append(f"[info] {message}")
         self._append_log(f"[info] {message}")
+
+    def _warning(self, message: str) -> None:
+        self._messages.append(f"[warning] {message}")
+        self._append_log(f"[warning] {message}")
+        if messagebox is not None and self._root is not None:
+            messagebox.showwarning("ADsum", message, parent=self._root)
 
     def _error(self, message: str) -> None:
         self._messages.append(f"[error] {message}")
