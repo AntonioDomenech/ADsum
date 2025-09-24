@@ -166,6 +166,43 @@ def _guess_ffmpeg_device_spec(device: str) -> Optional[str]:
     return target
 
 
+def _strip_wrapping_quotes(value: str) -> str:
+    """Return ``value`` without a single leading/trailing quote pair."""
+
+    trimmed = value.strip()
+    if len(trimmed) >= 2 and trimmed[0] == trimmed[-1] and trimmed[0] in {'"', "'"}:
+        trimmed = trimmed[1:-1]
+    # Handle common escaped quote representations produced by shells or config files.
+    trimmed = trimmed.replace(r'\"', '"').replace(r"\'", "'")
+    return trimmed
+
+
+def _normalise_input_target(input_format: str, target: str) -> str:
+    """Return the FFmpeg input target with any wrapping quotes removed.
+
+    DirectShow specifications commonly include quoted values (for example
+    ``audio="Device"``) when copied from the FFmpeg documentation or command
+    line. Quoted values are required when typing commands manually so that the
+    Windows shell keeps the value intact, but the literal quote characters must
+    not be forwarded to FFmpeg when launching it via :func:`subprocess.Popen`.
+    Removing the wrapping quotes ensures the underlying device name matches the
+    identifiers reported by FFmpeg, which otherwise results in silent captures.
+    """
+
+    trimmed = target.strip()
+    if not trimmed:
+        return trimmed
+
+    if input_format.lower() == "dshow":
+        prefix, sep, remainder = trimmed.partition("=")
+        if sep:
+            remainder = _strip_wrapping_quotes(remainder)
+            return f"{prefix}{sep}{remainder.strip()}"
+        return _strip_wrapping_quotes(trimmed)
+
+    return _strip_wrapping_quotes(trimmed)
+
+
 def parse_ffmpeg_device(
     device: str,
     *,
@@ -196,7 +233,7 @@ def parse_ffmpeg_device(
         )
 
     input_format = split.scheme
-    input_target = (split.netloc + split.path).strip()
+    input_target = _normalise_input_target(input_format, (split.netloc + split.path).strip())
 
     if not input_target:
         raise CaptureError("FFmpeg device specification must include a device identifier")

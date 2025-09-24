@@ -69,7 +69,22 @@ def test_parse_ffmpeg_device_guesses_windows_index(monkeypatch) -> None:
     )
 
     assert spec.input_format == "dshow"
-    assert spec.input_target == 'audio="USB Microphone"'
+    assert spec.input_target == "audio=USB Microphone"
+
+
+def test_parse_ffmpeg_device_strips_dshow_quotes(monkeypatch) -> None:
+    """Quoted DirectShow identifiers should be normalised before use."""
+
+    monkeypatch.setattr(ffmpeg_backend, "_detect_platform", lambda: "windows")
+
+    spec = parse_ffmpeg_device(
+        r'dshow:audio="@device_cm_{123}\wave_{456}"',
+        default_sample_rate=16000,
+        default_channels=1,
+    )
+
+    assert spec.input_format == "dshow"
+    assert spec.input_target == "audio=@device_cm_{123}\\wave_{456}"
 
 
 class _FakeProcess:
@@ -122,6 +137,24 @@ def test_ffmpeg_capture_stream(monkeypatch) -> None:
     assert chunk.shape == (2, 2)
     assert np.isclose(chunk[0, 1], 1.0, atol=1e-4)
     assert np.isclose(chunk[1, 0], 0.5, atol=1e-4)
+
+
+def test_ffmpeg_command_uses_normalised_dshow_target(monkeypatch) -> None:
+    monkeypatch.setattr(ffmpeg_backend, "_detect_platform", lambda: "windows")
+
+    spec = parse_ffmpeg_device(
+        'dshow:audio="Loopback Device"',
+        default_sample_rate=16000,
+        default_channels=1,
+    )
+    info = CaptureInfo(name="system", sample_rate=16000, channels=1)
+    capture = FFmpegCapture(info, spec=spec, binary="ffmpeg", chunk_frames=2)
+
+    command = capture._build_command("ffmpeg")
+
+    assert "-i" in command
+    target = command[command.index("-i") + 1]
+    assert target == "audio=Loopback Device"
 
 
 def test_resolve_binary_appends_exe_on_windows(tmp_path, monkeypatch) -> None:
