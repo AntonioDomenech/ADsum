@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import wave
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, List, Tuple
 
@@ -76,5 +77,81 @@ def mix_audio_files(paths: Iterable[Path], output_path: Path) -> Path:
     return output_path
 
 
-__all__ = ["read_wave", "write_wave", "ensure_mono", "mix_audio_files"]
+@dataclass(slots=True)
+class AudioChunk:
+    """Metadata about an intermediate audio chunk produced during splitting."""
+
+    path: Path
+    start: float
+    duration: float
+
+
+def split_wave_file(path: Path, max_bytes: int) -> List[AudioChunk]:
+    """Split a WAV file into sequential chunks that do not exceed ``max_bytes``.
+
+    The function streams frames from ``path`` without loading the full file into
+    memory. Each chunk is written as a temporary WAV file in the same directory
+    and the resulting metadata captures the chunk's start offset and duration so
+    downstream consumers can adjust timestamps when merging responses.
+    """
+
+    if max_bytes <= 0:
+        raise ValueError("max_bytes must be a positive integer")
+
+    chunks: List[AudioChunk] = []
+    with wave.open(str(path), "rb") as source:
+        n_channels = source.getnchannels()
+        sample_width = source.getsampwidth()
+        frame_rate = source.getframerate()
+        frame_size = n_channels * sample_width
+        if frame_size <= 0:
+            raise ValueError("Invalid WAV metadata; frame size must be positive")
+
+        # Account for WAV header overhead to keep the final file size under the
+        # limit. A standard PCM header is 44 bytes.
+        payload_budget = max_bytes - 44
+        if payload_budget <= 0:
+            raise ValueError("max_bytes is too small to fit a WAV header")
+
+        max_frames = max(payload_budget // frame_size, 1)
+        start_time = 0.0
+        index = 0
+
+        while True:
+            frames = source.readframes(max_frames)
+            if not frames:
+                break
+
+            frame_count = len(frames) // frame_size
+            duration = frame_count / frame_rate if frame_rate else 0.0
+
+            chunk_path = path.with_name(f"{path.stem}.chunk{index:03d}{path.suffix}")
+            if chunk_path.exists():
+                chunk_path.unlink()
+
+            with wave.open(str(chunk_path), "wb") as chunk_file:
+                chunk_file.setnchannels(n_channels)
+                chunk_file.setsampwidth(sample_width)
+                chunk_file.setframerate(frame_rate)
+                chunk_file.writeframes(frames)
+
+            if chunk_path.stat().st_size > max_bytes:
+                chunk_path.unlink(missing_ok=True)
+                raise ValueError("Chunk size exceeded max_bytes budget")
+
+            chunks.append(AudioChunk(path=chunk_path, start=start_time, duration=duration))
+            start_time += duration
+            index += 1
+
+    return chunks
+
+
+__all__ = [
+    "read_wave",
+    "write_wave",
+    "ensure_mono",
+    "mix_audio_files",
+    "AudioChunk",
+    "split_wave_file",
+]
 

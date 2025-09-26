@@ -25,6 +25,7 @@ class Settings(BaseSettings):
     openai_transcription_model: str = "gpt-4o-mini-transcribe"
     openai_notes_model: str = "gpt-4o-mini"
     openai_api_key: Optional[str] = None
+    openai_max_upload_bytes: int = 24 * 1024 * 1024
     session_prefix: str = "session"
     default_mic_device: Optional[str] = None
     default_system_device: Optional[str] = None

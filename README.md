@@ -112,6 +112,9 @@ Environment variables customise behaviour via `pydantic` settings (prefix `ADSUM
 - `ADSUM_OPENAI_TRANSCRIPTION_MODEL`: Model used for OpenAI transcription.
 - `ADSUM_OPENAI_NOTES_MODEL`: Model used for OpenAI notes/summarisation.
 - `ADSUM_OPENAI_API_KEY`: Optional API key forwarded to the OpenAI client (falls back to `OPENAI_API_KEY`).
+- `ADSUM_OPENAI_MAX_UPLOAD_BYTES`: Maximum payload size (default ~24 MiB) before recordings are automatically split for OpenAI uploads.
+
+Recordings that exceed the upload limit are transparently chunked into sequential WAV files before contacting OpenAI, ensuring long meetings are transcribed without manual intervention.
 
 ### Choosing a transcription backend
 
