@@ -9,6 +9,7 @@ from typing import Any, Callable, Dict, List, Optional
 from ...config import get_settings
 from ...data.models import RecordingSession, TranscriptResult, TranscriptSegment
 from ...logging import get_logger
+from ...utils.audio import split_wave_file
 from .base import TranscriptionService
 
 LOGGER = get_logger(__name__)
@@ -18,6 +19,8 @@ class OpenAITranscriptionService(TranscriptionService):
     def __init__(self, model: Optional[str] = None) -> None:
         settings = get_settings()
         self.model = model or settings.openai_transcription_model
+        self.max_upload_bytes = settings.openai_max_upload_bytes
+
         try:
             from openai import OpenAI, OpenAIError  # type: ignore
         except ImportError as exc:  # pragma: no cover - runtime dependency guard
@@ -40,29 +43,15 @@ class OpenAITranscriptionService(TranscriptionService):
 
     def transcribe(self, session: RecordingSession, audio_path: Path) -> TranscriptResult:
         LOGGER.info("Requesting OpenAI transcription for %s", audio_path)
-        response: Any = None
-        formats = self._candidate_response_formats()
-        for index, response_format in enumerate(formats):
-            try:
-                with open(audio_path, "rb") as audio_file:
-                    response = self.client.audio.transcriptions.create(
-                        model=self.model,
-                        file=audio_file,
-                        response_format=response_format,
-                    )
-                break
-            except self._openai_error_cls as exc:
-                if self._is_response_format_error(exc) and index < len(formats) - 1:
-                    LOGGER.info(
-                        "Response format '%s' is not supported by model '%s'; retrying with '%s'",
-                        response_format,
-                        self.model,
-                        formats[index + 1],
-                    )
-                    continue
-                raise
 
-        text, segments, raw_response = self._parse_transcription_response(response)
+        if audio_path.stat().st_size > self.max_upload_bytes:
+            LOGGER.info(
+                "Audio file exceeds upload limit (%s bytes); using chunked transcription",
+                self.max_upload_bytes,
+            )
+            return self._transcribe_large_file(session, audio_path)
+
+        text, segments, raw_response = self._transcribe_path(audio_path)
         return TranscriptResult(
             session_id=session.id,
             channel=audio_path.stem,
@@ -77,6 +66,13 @@ class OpenAITranscriptionService(TranscriptionService):
         audio_path: Path,
         on_update: Optional[Callable[[TranscriptResult], None]] = None,
     ) -> TranscriptResult:
+        if audio_path.stat().st_size > self.max_upload_bytes:
+            LOGGER.info(
+                "Audio file exceeds upload limit (%s bytes); using chunked transcription",
+                self.max_upload_bytes,
+            )
+            return self._transcribe_large_file(session, audio_path, on_update=on_update)
+
         if on_update is None:
             return self.transcribe(session, audio_path)
 
@@ -236,6 +232,121 @@ class OpenAITranscriptionService(TranscriptionService):
 
     def _candidate_response_formats(self) -> List[str]:
         return ["verbose_json", "json", "text"]
+
+    def _transcribe_path(self, audio_path: Path) -> tuple[str, List[TranscriptSegment], Optional[Dict[str, Any]]]:
+        response: Any = None
+        formats = self._candidate_response_formats()
+        for index, response_format in enumerate(formats):
+            try:
+                with open(audio_path, "rb") as audio_file:
+                    response = self.client.audio.transcriptions.create(
+                        model=self.model,
+                        file=audio_file,
+                        response_format=response_format,
+                    )
+                break
+            except self._openai_error_cls as exc:
+                if self._is_response_format_error(exc) and index < len(formats) - 1:
+                    LOGGER.info(
+                        "Response format '%s' is not supported by model '%s'; retrying with '%s'",
+                        response_format,
+                        self.model,
+                        formats[index + 1],
+                    )
+                    continue
+                raise
+
+        return self._parse_transcription_response(response)
+
+    def _transcribe_large_file(
+        self,
+        session: RecordingSession,
+        audio_path: Path,
+        on_update: Optional[Callable[[TranscriptResult], None]] = None,
+    ) -> TranscriptResult:
+        try:
+            chunks = split_wave_file(audio_path, self.max_upload_bytes)
+        except Exception:
+            LOGGER.exception("Failed to split audio for chunked transcription")
+            raise
+
+        if not chunks:
+            empty = TranscriptResult(session_id=session.id, channel=audio_path.stem, text="", segments=[])
+            if on_update is not None:
+                try:
+                    on_update(empty)
+                except Exception:  # pragma: no cover - callback safety
+                    LOGGER.exception("Transcript update callback raised an exception")
+            return empty
+
+        aggregated_segments: List[TranscriptSegment] = []
+        aggregated_text_parts: List[str] = []
+        raw_chunks: List[Dict[str, Any]] = []
+
+        try:
+            for chunk in chunks:
+                text, segments, raw_response = self._transcribe_path(chunk.path)
+                cleaned_text = text.strip()
+                if cleaned_text:
+                    aggregated_text_parts.append(cleaned_text)
+
+                for segment in segments:
+                    start = segment.start + chunk.start if segment.start is not None else None
+                    end = segment.end + chunk.start if segment.end is not None else None
+                    aggregated_segments.append(
+                        TranscriptSegment(
+                            start=start,
+                            end=end,
+                            text=segment.text.strip(),
+                        )
+                    )
+
+                chunk_entry: Dict[str, Any] = {
+                    "start": chunk.start,
+                    "duration": chunk.duration,
+                    "text": text,
+                }
+                if raw_response is not None:
+                    chunk_entry["raw_response"] = raw_response
+                raw_chunks.append(chunk_entry)
+
+                if on_update is not None:
+                    partial_text = "\n".join(part for part in aggregated_text_parts if part).strip()
+                    partial_result = TranscriptResult(
+                        session_id=session.id,
+                        channel=audio_path.stem,
+                        text=partial_text,
+                        segments=[segment.model_copy() for segment in aggregated_segments],
+                        raw_response={"chunks": raw_chunks.copy()},
+                    )
+                    try:
+                        on_update(partial_result)
+                    except Exception:  # pragma: no cover - callbacks should not break pipeline
+                        LOGGER.exception("Transcript update callback raised an exception")
+
+        finally:
+            for chunk in chunks:
+                try:
+                    chunk.path.unlink(missing_ok=True)
+                except Exception:  # pragma: no cover - best effort cleanup
+                    LOGGER.debug("Failed to delete temporary chunk %s", chunk.path, exc_info=True)
+
+        final_text = "\n".join(part for part in aggregated_text_parts if part).strip()
+        final_raw: Optional[Dict[str, Any]]
+        if raw_chunks:
+            final_raw = {"chunks": raw_chunks}
+            if final_text:
+                final_raw["text"] = final_text
+        else:
+            final_raw = None
+
+        return TranscriptResult(
+            session_id=session.id,
+            channel=audio_path.stem,
+            text=final_text,
+            segments=aggregated_segments,
+            raw_response=final_raw,
+        )
 
     def _is_response_format_error(self, exc: Exception) -> bool:
         message = str(getattr(exc, "message", None) or exc)
