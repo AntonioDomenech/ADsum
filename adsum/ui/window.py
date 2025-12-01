@@ -8,9 +8,7 @@ import threading
 import time
 from collections import deque
 from dataclasses import dataclass
-import os
 from typing import Any, Deque, Dict, Iterable, List, Optional, Set, Tuple
-from urllib.parse import urlsplit
 
 try:  # pragma: no cover - import guard for optional tkinter dependency
     import tkinter as tk
@@ -35,17 +33,8 @@ from ..config import (
     update_environment_setting,
 )
 from ..data.models import NoteDocument, TranscriptResult
-from ..core.audio.base import AudioCapture, CaptureError
-from ..core.audio.devices import (
-    DeviceInfo,
-    FFmpegDevice,
-    FFmpegDeviceEnumerationError,
-    format_device_table,
-    format_ffmpeg_error_message,
-    list_ffmpeg_devices,
-    list_input_devices,
-    recommended_ffmpeg_device_spec,
-)
+from ..core.audio.base import AudioCapture
+from ..core.audio.devices import DeviceInfo, FFmpegDevice, list_input_devices
 from ..core.audio.factory import (
     CaptureConfigurationError,
     CaptureRequest,
@@ -53,9 +42,6 @@ from ..core.audio.factory import (
     create_capture,
 )
 from ..core.audio.ffmpeg_backend import FFmpegBinaryNotFoundError, ensure_ffmpeg_available
-
-
-DEVICE_DISABLE_KEYWORDS = {"skip", "none", "off", "disabled"}
 from ..core.pipeline.orchestrator import (
     RecordingControl,
     RecordingOrchestrator,
@@ -67,6 +53,14 @@ from ..services.factory import (
     ServiceConfigurationError,
     resolve_notes_backend,
     resolve_transcription_backend,
+)
+from .shared import format_env_value, normalize_device_value, suggest_session_name
+from .window_devices import (
+    auto_detect_working_devices,
+    build_device_option_map,
+    format_ffmpeg_preview,
+    load_ffmpeg_devices_for_options,
+    render_device_table,
 )
 
 LOGGER = get_logger(__name__)
@@ -1007,7 +1001,13 @@ class RecordingWindowUI:
             name = self._prompt_session_name(name_default)
             self._default_name = name
 
-            working_devices, device_report = self._auto_detect_working_devices()
+            working_devices, device_report = auto_detect_working_devices(
+                self._settings,
+                sample_rate=self.sample_rate,
+                channels=self.channels,
+                chunk_seconds=self._settings.chunk_seconds,
+                info_callback=self._info,
+            )
 
             (
                 mic,
@@ -1144,7 +1144,7 @@ class RecordingWindowUI:
         if not self._root:
             return
 
-        self._show_text_window("Available audio devices", self._render_device_table())
+        self._show_text_window("Available audio devices", render_device_table(self._settings))
 
         last_value = self._default_mic or self._default_system or ""
         tested_any = False
@@ -1199,7 +1199,7 @@ class RecordingWindowUI:
         self._show_text_window("Stored sessions", "\n".join(lines))
 
     def _show_devices(self) -> None:
-        self._show_text_window("Audio devices", self._render_device_table())
+        self._show_text_window("Audio devices", render_device_table(self._settings))
 
     def _configure_environment(self) -> None:
         settings_entries = list(list_environment_settings(self._settings))
@@ -1357,158 +1357,16 @@ class RecordingWindowUI:
         return value
 
     def _normalize_device_value(self, value: Optional[str]) -> Optional[str]:
-        if value is None:
-            return None
-        if value == DISABLED_DEVICE_SENTINEL:
-            return DISABLED_DEVICE_SENTINEL
-        stripped = value.strip()
-        if not stripped:
-            return None
-        lowered = stripped.lower()
-        if lowered in DEVICE_DISABLE_KEYWORDS:
-            return DISABLED_DEVICE_SENTINEL
-        if lowered in {"default", "auto"}:
-            return None
-        return stripped
-
-    def _render_device_table(self) -> str:
-        try:
-            return format_device_table()
-        except FFmpegBinaryNotFoundError as exc:
-            LOGGER.error("FFmpeg binary unavailable while listing devices: %s", exc)
-            message = f"Unable to launch FFmpeg for device enumeration: {exc}"
-            return format_ffmpeg_error_message(self._settings.ffmpeg_binary, message)
-        except FFmpegDeviceEnumerationError as exc:
-            LOGGER.error("FFmpeg device enumeration failed: %s", exc)
-            message = f"Unable to enumerate FFmpeg audio devices: {exc}"
-            return format_ffmpeg_error_message(self._settings.ffmpeg_binary, message)
-
-    def _load_ffmpeg_devices_for_options(self) -> List[FFmpegDevice]:
-        try:
-            return list_ffmpeg_devices()
-        except FFmpegBinaryNotFoundError as exc:
-            LOGGER.warning(
-                "FFmpeg binary unavailable while building device options: %s", exc
-            )
-        except FFmpegDeviceEnumerationError as exc:
-            LOGGER.warning(
-                "FFmpeg device enumeration failed while building device options: %s",
-                exc,
-            )
-        return []
+        return normalize_device_value(value)
 
     def _auto_detect_working_devices(self) -> Tuple[List[DeviceInfo], str]:
-        backend = (self._settings.audio_backend or "").strip().lower()
-
-        if backend == "ffmpeg":
-            message = self._render_device_table()
-            self._info(
-                "FFmpeg audio backend active; skipping automatic device probing."
-            )
-            return [], message
-
-        devices = list_input_devices()
-
-        if not devices:
-            message = (
-                "No audio input devices were detected by the legacy probe. Provide "
-                "an FFmpeg capture specification manually when prompted."
-            )
-            self._info("No audio input devices were detected before starting the session.")
-            return [], message
-
-        self._info("Testing detected audio devices before starting the recording wizard...")
-
-        working: List[DeviceInfo] = []
-        failed: List[Tuple[DeviceInfo, str]] = []
-
-        for device in devices:
-            device_spec = str(device.id)
-            label = f"[{device.id}] {device.name}"
-            self._info(f"Probing {label}...")
-            success, reason = self._probe_device_capture(device_spec)
-            if success:
-                working.append(device)
-                self._info(f"{label} is ready for use.")
-            else:
-                failed.append((device, reason))
-                reason_text = reason or "unavailable"
-                self._info(f"{label} will be skipped: {reason_text}.")
-
-        if not working:
-            self._info(
-                "No working audio inputs were detected. You can proceed with system defaults or "
-                "disable individual channels."
-            )
-
-        report = self._format_device_probe_report(working, failed)
-        return working, report
-
-    def _probe_device_capture(self, device: str) -> Tuple[bool, str]:
-        request = CaptureRequest(
-            channel="probe",
-            device=device,
+        return auto_detect_working_devices(
+            self._settings,
             sample_rate=self.sample_rate,
             channels=self.channels,
-            backend=self._settings.audio_backend,
             chunk_seconds=self._settings.chunk_seconds,
+            info_callback=self._info,
         )
-
-        try:
-            capture = create_capture(request)
-        except CaptureConfigurationError as exc:
-            return False, f"configuration error: {exc}"
-
-        if capture is None:
-            return False, "no capture backend available"
-
-        try:
-            capture.start()
-            chunk = None
-            deadline = time.time() + 1.5
-            while time.time() < deadline:
-                try:
-                    chunk = capture.read(timeout=0.3)
-                except CaptureError as exc:
-                    return False, f"read failed: {exc}"
-                if chunk is not None and getattr(chunk, "size", 0) > 0:
-                    return True, ""
-            return False, "no audio data received"
-        except CaptureError as exc:
-            return False, f"capture error: {exc}"
-        except Exception as exc:  # pragma: no cover - depends on runtime backend
-            LOGGER.exception("Unexpected error while probing device %s: %s", device, exc)
-            return False, str(exc)
-        finally:
-            with contextlib.suppress(Exception):
-                capture.stop()
-            with contextlib.suppress(Exception):
-                capture.close()
-
-    def _format_device_probe_report(
-        self,
-        working: Iterable[DeviceInfo],
-        failed: Iterable[Tuple[DeviceInfo, str]],
-    ) -> str:
-        working_list = list(working)
-        failed_list = list(failed)
-
-        sections: List[str] = []
-
-        if working_list:
-            sections.append("Working audio input devices:")
-            sections.append(format_device_table(working_list))
-        else:
-            sections.append("No working audio input devices were detected.")
-
-        if failed_list:
-            lines = ["", "Devices skipped after testing:"]
-            for device, reason in failed_list:
-                detail = reason or "unavailable"
-                lines.append(f"  [{device.id}] {device.name} — {detail}")
-            sections.extend(lines)
-
-        return "\n".join(sections)
 
     def _prompt_recording_configuration(
         self,
@@ -1534,9 +1392,9 @@ class RecordingWindowUI:
 
         ffmpeg_devices: List[FFmpegDevice] = []
         if ffmpeg_backend_active:
-            ffmpeg_devices = self._load_ffmpeg_devices_for_options()
+            ffmpeg_devices = load_ffmpeg_devices_for_options(self._settings)
 
-        option_map = self._build_device_option_map(devices, ffmpeg_devices)
+        option_map = build_device_option_map(devices, ffmpeg_devices)
         option_labels = list(option_map.keys())
         allowed_values = set(option_map.values())
 
@@ -1672,7 +1530,7 @@ class RecordingWindowUI:
         device_text = ScrolledText(device_frame, height=8, width=70)
         device_text.insert(
             "1.0",
-            device_report if device_report is not None else self._render_device_table(),
+            device_report if device_report is not None else render_device_table(self._settings),
         )
         device_text.configure(
             state="disabled",
@@ -1695,8 +1553,11 @@ class RecordingWindowUI:
                 system_value_preview = self._resolve_device_selection(
                     system_var.get(), option_map
                 )
-                preview = self._format_ffmpeg_preview(
-                    mic_value_preview, system_value_preview
+                preview = format_ffmpeg_preview(
+                    mic_value_preview,
+                    system_value_preview,
+                    sample_rate=self.sample_rate,
+                    channels=self.channels,
                 )
                 if not preview:
                     preview = (
@@ -1755,57 +1616,6 @@ class RecordingWindowUI:
 
         return mic_value, system_value, bool(mix_var.get()), transcription_value, notes_value
 
-    def _build_device_option_map(
-        self,
-        devices: Optional[Iterable[DeviceInfo]],
-        ffmpeg_devices: Optional[Iterable[FFmpegDevice]] = None,
-    ) -> Dict[str, Optional[str]]:
-        options: Dict[str, Optional[str]] = {"Use system default": None}
-
-        if os.name == "nt":
-            options["Default system output (WASAPI loopback)"] = "wasapi:default?loopback=1"
-
-        options["Disable capture"] = DISABLED_DEVICE_SENTINEL
-
-        for device in devices or []:
-            label = f"[{device.id}] {device.name}"
-            if device.is_loopback:
-                label += " (loopback)"
-            value = str(device.id)
-            normalized = self._normalize_device_value(value)
-            options[label] = normalized if normalized is not None else value
-
-        for device in ffmpeg_devices or []:
-            spec = recommended_ffmpeg_device_spec(device)
-            if not spec:
-                continue
-            label = self._format_ffmpeg_option_label(device)
-            normalized = self._normalize_device_value(spec)
-            options[label] = normalized if normalized is not None else spec
-
-        return options
-
-    def _format_ffmpeg_option_label(self, device: FFmpegDevice) -> str:
-        base_name = device.name or device.details or "Unnamed device"
-        label = f"[{device.index}] {base_name}"
-
-        descriptors: List[str] = []
-        if device.input_format:
-            descriptors.append(device.input_format)
-        if getattr(device, "loopback", False):
-            descriptors.append("loopback")
-        if device.channels:
-            descriptors.append(f"{device.channels}ch")
-        if device.sample_rate:
-            descriptors.append(f"{device.sample_rate} Hz")
-        if device.details and device.details not in base_name:
-            descriptors.append(device.details)
-
-        if descriptors:
-            label = f"{label} — {', '.join(descriptors)}"
-
-        return label
-
     def _device_display_for_value(
         self, value: Optional[str], options: Dict[str, Optional[str]]
     ) -> str:
@@ -1828,100 +1638,6 @@ class RecordingWindowUI:
         if choice in options:
             return options[choice]
         return choice
-
-    def _format_ffmpeg_preview(
-        self,
-        mic: Optional[str],
-        system: Optional[str],
-    ) -> str:
-        sections = [
-            self._describe_ffmpeg_channel("Microphone input", mic),
-            self._describe_ffmpeg_channel("System audio", system),
-        ]
-        content = "\n\n".join(section for section in sections if section).strip()
-        return content
-
-    def _describe_ffmpeg_channel(
-        self,
-        label: str,
-        device: Optional[str],
-    ) -> str:
-        normalized = self._normalize_device_value(device)
-        lines = [f"{label}:"]
-
-        if normalized is None:
-            lines.append("  Using system default input.")
-            return "\n".join(lines)
-
-        if normalized == DISABLED_DEVICE_SENTINEL:
-            lines.append("  Capture disabled for this channel.")
-            return "\n".join(lines)
-
-        original_value = normalized
-        lines.append(f"  Entered: {original_value}")
-
-        try:
-            from ..core.audio.ffmpeg_backend import parse_ffmpeg_device
-        except Exception as exc:  # pragma: no cover - import guard
-            LOGGER.debug("Unable to import FFmpeg parser for preview: %s", exc)
-            lines.append(
-                "  FFmpeg heuristics are unavailable. Ensure FFmpeg support is installed."
-            )
-            return "\n".join(lines)
-
-        try:
-            spec = parse_ffmpeg_device(
-                original_value,
-                default_sample_rate=self.sample_rate,
-                default_channels=self.channels,
-            )
-        except CaptureError as exc:
-            lines.append(f"  Error: {exc}")
-            return "\n".join(lines)
-
-        target = f"{spec.input_format}:{spec.input_target}"
-        original_split = urlsplit(original_value)
-        if not original_split.scheme:
-            lines.append(f"  Inferred target: {target}")
-        else:
-            lines.append(f"  Target: {target}")
-
-        query_parts = [
-            f"sample_rate={spec.sample_rate}",
-            f"channels={spec.channels}",
-            f"sample_fmt={spec.sample_format}",
-        ]
-        if spec.chunk_frames is not None:
-            query_parts.append(f"chunk_frames={spec.chunk_frames}")
-
-        normalized_spec = target
-        if query_parts:
-            normalized_spec = f"{target}?{'&'.join(query_parts)}"
-        lines.append(f"  Normalised spec: {normalized_spec}")
-        lines.append(
-            f"  Stream parameters: {spec.channels} channel(s) @ {spec.sample_rate} Hz ({spec.sample_format})"
-        )
-
-        if spec.args_before_input:
-            lines.append(
-                "  Extra input args: " + " ".join(spec.args_before_input)
-            )
-        if spec.args_after_input:
-            lines.append(
-                "  Extra output args: " + " ".join(spec.args_after_input)
-            )
-
-        return "\n".join(lines)
-
-    def _format_device_display(self, value: Optional[str]) -> str:
-        if value == DISABLED_DEVICE_SENTINEL:
-            return "disabled"
-        if value:
-            trimmed = value.strip().lower()
-            if trimmed == "wasapi:default?loopback=1":
-                return "system loopback (WASAPI)"
-            return value
-        return "system default"
 
     def _persist_device_setting(
         self, field: str, value: Optional[str], label: str
@@ -2086,8 +1802,7 @@ class RecordingWindowUI:
         return self._active
 
     def _suggest_session_name(self) -> str:
-        timestamp = time.strftime("%Y%m%d-%H%M%S", time.localtime())
-        return f"Session {timestamp}"
+        return suggest_session_name()
 
     def _apply_settings(self, settings: Settings) -> None:
         self._settings = settings
@@ -2103,13 +1818,7 @@ class RecordingWindowUI:
         )
 
     def _format_env_value(self, value: Any) -> str:
-        if value is None:
-            return "(unset)"
-        if value == DISABLED_DEVICE_SENTINEL:
-            return "disabled"
-        if isinstance(value, bool):
-            return "true" if value else "false"
-        return str(value)
+        return format_env_value(value)
 
     def _run_recording(
         self,

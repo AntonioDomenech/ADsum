@@ -2,12 +2,11 @@
 
 from __future__ import annotations
 
+import os
 import threading
 import time
-import os
 from collections import deque
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any, Deque, Dict, Optional
 
 from ..config import (
@@ -26,9 +25,6 @@ from ..core.audio.factory import (
     create_capture,
 )
 from ..core.audio.ffmpeg_backend import FFmpegBinaryNotFoundError, ensure_ffmpeg_available
-
-
-DEVICE_DISABLE_KEYWORDS = {"skip", "none", "off", "disabled"}
 from ..core.audio.devices import (
     FFmpegDeviceEnumerationError,
     format_device_table,
@@ -45,6 +41,12 @@ from ..services.factory import (
     ServiceConfigurationError,
     resolve_notes_backend,
     resolve_transcription_backend,
+)
+from .shared import (
+    format_device_display,
+    format_env_value,
+    normalize_device_value,
+    suggest_session_name,
 )
 
 LOGGER = get_logger(__name__)
@@ -362,26 +364,13 @@ class RecordingConsoleUI:
     # Internal helpers
     # ------------------------------------------------------------------
     def _suggest_session_name(self) -> str:
-        timestamp = time.strftime("%Y%m%d-%H%M%S", time.localtime())
-        return f"Session {timestamp}"
+        return suggest_session_name()
 
     def _normalize_device_value(self, value: Optional[str]) -> Optional[str]:
-        if value is None:
-            return None
-        if value == DISABLED_DEVICE_SENTINEL:
-            return DISABLED_DEVICE_SENTINEL
-        stripped = value.strip()
-        if not stripped:
-            return None
-        lowered = stripped.lower()
-        if lowered in DEVICE_DISABLE_KEYWORDS:
-            return DISABLED_DEVICE_SENTINEL
-        if lowered in {"default", "auto"}:
-            return None
-        return stripped
+        return normalize_device_value(value)
 
     def _prompt_device(self, label: str, current: Optional[str]) -> Optional[str]:
-        placeholder = self._format_device_display(current)
+        placeholder = format_device_display(current)
         prompt = (
             f"{label} device id/name [{placeholder}] "
             "(press Enter for default/current, type 'skip' to disable): "
@@ -391,16 +380,6 @@ class RecordingConsoleUI:
             return current
         normalized = self._normalize_device_value(value)
         return normalized
-
-    def _format_device_display(self, value: Optional[str]) -> str:
-        if value == DISABLED_DEVICE_SENTINEL:
-            return "disabled"
-        if value:
-            trimmed = value.strip().lower()
-            if trimmed == "wasapi:default?loopback=1":
-                return "system loopback (WASAPI)"
-            return value
-        return "system default"
 
     def _render_device_table(self) -> str:
         try:
@@ -468,15 +447,7 @@ class RecordingConsoleUI:
             self.channels = settings.channels
 
     def _format_env_value(self, value: Any) -> str:
-        if value is None:
-            return "(unset)"
-        if value == DISABLED_DEVICE_SENTINEL:
-            return "disabled"
-        if isinstance(value, Path):
-            return str(value)
-        if isinstance(value, bool):
-            return "true" if value else "false"
-        return str(value)
+        return format_env_value(value)
 
     def _run_recording(
         self,
