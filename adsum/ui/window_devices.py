@@ -26,10 +26,7 @@ from ..core.audio.factory import (
     DISABLED_DEVICE_SENTINEL,
     create_capture,
 )
-from ..core.audio.ffmpeg_backend import (
-    FFmpegBinaryNotFoundError,
-    parse_ffmpeg_device,
-)
+from ..core.audio.ffmpeg_utils import FFmpegBinaryNotFoundError, parse_ffmpeg_device
 from ..logging import get_logger
 from .shared import normalize_device_value
 

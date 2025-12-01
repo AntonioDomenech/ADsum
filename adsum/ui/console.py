@@ -24,7 +24,7 @@ from ..core.audio.factory import (
     DISABLED_DEVICE_SENTINEL,
     create_capture,
 )
-from ..core.audio.ffmpeg_backend import FFmpegBinaryNotFoundError, ensure_ffmpeg_available
+from ..core.audio.ffmpeg_utils import FFmpegBinaryNotFoundError, ensure_ffmpeg_available
 from ..core.audio.devices import (
     FFmpegDeviceEnumerationError,
     format_device_table,

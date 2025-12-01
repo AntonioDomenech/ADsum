@@ -7,13 +7,10 @@ import numpy as np
 import pytest
 
 import adsum.core.audio.ffmpeg_backend as ffmpeg_backend
-from adsum.core.audio.base import CaptureInfo
-from adsum.core.audio.ffmpeg_backend import (
-    FFmpegBinaryNotFoundError,
-    FFmpegCapture,
-    parse_ffmpeg_device,
-    CaptureError,
-)
+import adsum.core.audio.ffmpeg_utils as ffmpeg_utils
+from adsum.core.audio.base import CaptureError, CaptureInfo
+from adsum.core.audio.ffmpeg_backend import FFmpegCapture
+from adsum.core.audio.ffmpeg_utils import FFmpegBinaryNotFoundError, parse_ffmpeg_device, resolve_ffmpeg_binary
 
 
 def test_parse_ffmpeg_device_accepts_overrides() -> None:
@@ -41,7 +38,7 @@ def test_parse_ffmpeg_device_rejects_unknown_option() -> None:
 
 
 def test_parse_ffmpeg_device_guesses_linux_defaults(monkeypatch) -> None:
-    monkeypatch.setattr(ffmpeg_backend, "_detect_platform", lambda: "linux")
+    monkeypatch.setattr(ffmpeg_utils, "_detect_platform", lambda: "linux")
 
     spec = parse_ffmpeg_device(
         "default?channels=2",
@@ -55,9 +52,9 @@ def test_parse_ffmpeg_device_guesses_linux_defaults(monkeypatch) -> None:
 
 
 def test_parse_ffmpeg_device_guesses_windows_index(monkeypatch) -> None:
-    monkeypatch.setattr(ffmpeg_backend, "_detect_platform", lambda: "windows")
+    monkeypatch.setattr(ffmpeg_utils, "_detect_platform", lambda: "windows")
     monkeypatch.setattr(
-        ffmpeg_backend,
+        ffmpeg_utils,
         "_lookup_ffmpeg_device_name",
         lambda index: "USB Microphone" if index == 2 else None,
     )
@@ -75,7 +72,7 @@ def test_parse_ffmpeg_device_guesses_windows_index(monkeypatch) -> None:
 def test_parse_ffmpeg_device_strips_dshow_quotes(monkeypatch) -> None:
     """Quoted DirectShow identifiers should be normalised before use."""
 
-    monkeypatch.setattr(ffmpeg_backend, "_detect_platform", lambda: "windows")
+    monkeypatch.setattr(ffmpeg_utils, "_detect_platform", lambda: "windows")
 
     spec = parse_ffmpeg_device(
         r'dshow:audio="@device_cm_{123}\wave_{456}"',
@@ -133,7 +130,7 @@ def test_ffmpeg_capture_stream(monkeypatch) -> None:
     fake_process = _FakeProcess(sample)
     recorded: dict = {}
 
-    monkeypatch.setattr(ffmpeg_backend, "_resolve_binary", lambda binary: "/usr/bin/ffmpeg")
+    monkeypatch.setattr(ffmpeg_backend, "ensure_ffmpeg_available", lambda binary: "/usr/bin/ffmpeg")
 
     def fake_popen(cmd, stdin, stdout, stderr, bufsize):
         recorded["cmd"] = cmd
@@ -154,7 +151,7 @@ def test_ffmpeg_capture_stream(monkeypatch) -> None:
 
 
 def test_ffmpeg_command_uses_normalised_dshow_target(monkeypatch) -> None:
-    monkeypatch.setattr(ffmpeg_backend, "_detect_platform", lambda: "windows")
+    monkeypatch.setattr(ffmpeg_utils, "_detect_platform", lambda: "windows")
 
     spec = parse_ffmpeg_device(
         'dshow:audio="Loopback Device"',
@@ -177,10 +174,10 @@ def test_resolve_binary_appends_exe_on_windows(tmp_path, monkeypatch) -> None:
     fake_binary = fake_root.with_suffix(".exe")
     fake_binary.write_bytes(b"")
 
-    monkeypatch.setattr(ffmpeg_backend, "os", types.SimpleNamespace(name="nt", environ={}))
-    monkeypatch.setattr(ffmpeg_backend.shutil, "which", lambda name: None)
+    monkeypatch.setattr(ffmpeg_utils, "os", types.SimpleNamespace(name="nt", environ={}))
+    monkeypatch.setattr(ffmpeg_utils.shutil, "which", lambda name: None)
 
-    resolved = ffmpeg_backend._resolve_binary(str(fake_root))
+    resolved = resolve_ffmpeg_binary(str(fake_root))
 
     assert resolved == str(fake_binary)
 
@@ -194,7 +191,7 @@ def test_missing_binary_error_message(monkeypatch) -> None:
     info = CaptureInfo(name="microphone", sample_rate=16000, channels=1)
     capture = FFmpegCapture(info, spec=spec, binary="ffmpeg")
 
-    monkeypatch.setattr(ffmpeg_backend, "_resolve_binary", lambda binary: None)
+    monkeypatch.setattr(ffmpeg_backend, "ensure_ffmpeg_available", lambda binary: None)
 
     with pytest.raises(FFmpegBinaryNotFoundError) as excinfo:
         capture.start()

@@ -11,7 +11,7 @@ from typing import Callable, Iterable, List, Optional, Sequence
 
 from ...config import get_settings
 from ...logging import get_logger
-from .ffmpeg_backend import FFmpegBinaryNotFoundError, ensure_ffmpeg_available
+from .ffmpeg_utils import FFmpegBinaryNotFoundError, ensure_ffmpeg_available
 
 LOGGER = get_logger(__name__)
 

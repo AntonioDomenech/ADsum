@@ -74,11 +74,11 @@ def create_capture(request: CaptureRequest) -> Optional[AudioCapture]:
             raise CaptureConfigurationError("FFmpeg backend requires a device string")
 
         try:
-            from .ffmpeg_backend import (
+            from .ffmpeg_backend import FFmpegCapture
+            from .ffmpeg_utils import (
                 FFmpegBinaryNotFoundError,
-                FFmpegCapture,
-                _resolve_binary,
                 parse_ffmpeg_device,
+                resolve_ffmpeg_binary,
             )
         except ImportError as exc:  # pragma: no cover - defensive
             raise CaptureConfigurationError("FFmpeg backend is unavailable") from exc
@@ -182,7 +182,7 @@ def create_capture(request: CaptureRequest) -> Optional[AudioCapture]:
                         exc,
                     )
 
-        resolved_binary = _resolve_binary(settings.ffmpeg_binary)
+        resolved_binary = resolve_ffmpeg_binary(settings.ffmpeg_binary)
 
         if resolved_binary is None:
             error = FFmpegBinaryNotFoundError(settings.ffmpeg_binary)

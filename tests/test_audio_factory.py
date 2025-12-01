@@ -9,8 +9,9 @@ import pytest
 
 import adsum.core.audio.factory as factory_module
 import adsum.core.audio.ffmpeg_backend as ffmpeg_backend
-from adsum.core.audio.factory import CaptureConfigurationError, CaptureRequest, create_capture
+import adsum.core.audio.ffmpeg_utils as ffmpeg_utils
 from adsum.core.audio.base import CaptureError
+from adsum.core.audio.factory import CaptureConfigurationError, CaptureRequest, create_capture
 
 
 class _DummySettings:
@@ -40,7 +41,7 @@ def test_create_capture_raises_when_ffmpeg_unavailable(monkeypatch: pytest.Monke
     """Missing FFmpeg binaries should surface a configuration error."""
 
     monkeypatch.setattr(factory_module, "get_settings", lambda: _DummySettings())
-    monkeypatch.setattr(ffmpeg_backend, "_resolve_binary", lambda binary: None)
+    monkeypatch.setattr(ffmpeg_utils, "resolve_ffmpeg_binary", lambda binary: None)
 
     request = CaptureRequest(
         channel="microphone",
@@ -62,7 +63,7 @@ def test_create_capture_returns_ffmpeg_capture(monkeypatch: pytest.MonkeyPatch) 
     """Successful capture creation should instantiate the FFmpeg backend."""
 
     monkeypatch.setattr(factory_module, "get_settings", lambda: _DummySettings())
-    monkeypatch.setattr(ffmpeg_backend, "_resolve_binary", lambda binary: "/usr/bin/ffmpeg")
+    monkeypatch.setattr(ffmpeg_utils, "resolve_ffmpeg_binary", lambda binary: "/usr/bin/ffmpeg")
 
     captured: dict[str, object] = {}
 
@@ -74,13 +75,17 @@ def test_create_capture_returns_ffmpeg_capture(monkeypatch: pytest.MonkeyPatch) 
             captured["chunk_frames"] = chunk_frames
 
     fake_module = types.SimpleNamespace(
-        FFmpegBinaryNotFoundError=ffmpeg_backend.FFmpegBinaryNotFoundError,
+        FFmpegBinaryNotFoundError=ffmpeg_utils.FFmpegBinaryNotFoundError,
         FFmpegCapture=DummyCapture,
-        _resolve_binary=ffmpeg_backend._resolve_binary,
-        parse_ffmpeg_device=ffmpeg_backend.parse_ffmpeg_device,
+    )
+    fake_utils = types.SimpleNamespace(
+        FFmpegBinaryNotFoundError=ffmpeg_utils.FFmpegBinaryNotFoundError,
+        parse_ffmpeg_device=ffmpeg_utils.parse_ffmpeg_device,
+        resolve_ffmpeg_binary=ffmpeg_utils.resolve_ffmpeg_binary,
     )
 
     monkeypatch.setitem(sys.modules, "adsum.core.audio.ffmpeg_backend", fake_module)
+    monkeypatch.setitem(sys.modules, "adsum.core.audio.ffmpeg_utils", fake_utils)
 
     request = CaptureRequest(
         channel="microphone",
@@ -104,9 +109,9 @@ def test_create_capture_prefers_soundcard_loopback(monkeypatch: pytest.MonkeyPat
 
     fake_settings = _DummySettings()
     monkeypatch.setattr(factory_module, "get_settings", lambda: fake_settings)
-    monkeypatch.setattr(ffmpeg_backend, "_resolve_binary", lambda binary: "/usr/bin/ffmpeg")
+    monkeypatch.setattr(ffmpeg_utils, "resolve_ffmpeg_binary", lambda binary: "/usr/bin/ffmpeg")
 
-    fake_spec = ffmpeg_backend.FFmpegDeviceSpec(
+    fake_spec = ffmpeg_utils.FFmpegDeviceSpec(
         input_format="wasapi",
         input_target='"Speakers (Realtek(R) Audio)"',
         args_before_input=[],
@@ -117,7 +122,7 @@ def test_create_capture_prefers_soundcard_loopback(monkeypatch: pytest.MonkeyPat
         sample_format="f32le",
         chunk_frames=None,
     )
-    monkeypatch.setattr(ffmpeg_backend, "parse_ffmpeg_device", lambda *_, **__: fake_spec)
+    monkeypatch.setattr(ffmpeg_utils, "parse_ffmpeg_device", lambda *_, **__: fake_spec)
 
     captured_kwargs: dict = {}
 
@@ -157,9 +162,9 @@ def test_create_capture_prefers_sounddevice_loopback(monkeypatch: pytest.MonkeyP
 
     fake_settings = _DummySettings()
     monkeypatch.setattr(factory_module, "get_settings", lambda: fake_settings)
-    monkeypatch.setattr(ffmpeg_backend, "_resolve_binary", lambda binary: "/usr/bin/ffmpeg")
+    monkeypatch.setattr(ffmpeg_utils, "resolve_ffmpeg_binary", lambda binary: "/usr/bin/ffmpeg")
 
-    fake_spec = ffmpeg_backend.FFmpegDeviceSpec(
+    fake_spec = ffmpeg_utils.FFmpegDeviceSpec(
         input_format="wasapi",
         input_target="Speakers (Realtek(R) Audio)",
         args_before_input=[],
@@ -171,7 +176,7 @@ def test_create_capture_prefers_sounddevice_loopback(monkeypatch: pytest.MonkeyP
         chunk_frames=None,
     )
 
-    monkeypatch.setattr(ffmpeg_backend, "parse_ffmpeg_device", lambda *_, **__: fake_spec)
+    monkeypatch.setattr(ffmpeg_utils, "parse_ffmpeg_device", lambda *_, **__: fake_spec)
 
     captured_kwargs: dict = {}
 
