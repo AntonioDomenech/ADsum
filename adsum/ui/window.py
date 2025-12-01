@@ -8,6 +8,7 @@ import threading
 import time
 from collections import deque
 from dataclasses import dataclass
+import os
 from typing import Any, Deque, Dict, Iterable, List, Optional, Set, Tuple
 from urllib.parse import urlsplit
 
@@ -1759,10 +1760,12 @@ class RecordingWindowUI:
         devices: Optional[Iterable[DeviceInfo]],
         ffmpeg_devices: Optional[Iterable[FFmpegDevice]] = None,
     ) -> Dict[str, Optional[str]]:
-        options: Dict[str, Optional[str]] = {
-            "Use system default": None,
-            "Disable capture": DISABLED_DEVICE_SENTINEL,
-        }
+        options: Dict[str, Optional[str]] = {"Use system default": None}
+
+        if os.name == "nt":
+            options["Default system output (WASAPI loopback)"] = "wasapi:default?loopback=1"
+
+        options["Disable capture"] = DISABLED_DEVICE_SENTINEL
 
         for device in devices or []:
             label = f"[{device.id}] {device.name}"
@@ -1789,6 +1792,8 @@ class RecordingWindowUI:
         descriptors: List[str] = []
         if device.input_format:
             descriptors.append(device.input_format)
+        if getattr(device, "loopback", False):
+            descriptors.append("loopback")
         if device.channels:
             descriptors.append(f"{device.channels}ch")
         if device.sample_rate:
@@ -1912,6 +1917,9 @@ class RecordingWindowUI:
         if value == DISABLED_DEVICE_SENTINEL:
             return "disabled"
         if value:
+            trimmed = value.strip().lower()
+            if trimmed == "wasapi:default?loopback=1":
+                return "system loopback (WASAPI)"
             return value
         return "system default"
 

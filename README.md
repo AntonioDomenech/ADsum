@@ -64,11 +64,21 @@ pulse:bluez_source.AA_BB_CC_DD_EE_FF.monitor?sample_rate=48000&channels=2
 # Windows DirectShow capture from a Bluetooth microphone
 dshow:audio=Bluetooth Headset?sample_rate=48000&channels=1
 
+# Windows WASAPI loopback for the current system output (captures audio even when routed to Bluetooth)
+wasapi:default?loopback=1
+
 # macOS AVFoundation input index 1
 avfoundation:1?channels=1
 ```
 
+With WASAPI loopback you can stream the system mix while keeping Bluetooth headsets active—the mic and playback channels remain independent, mirroring tools such as Loom. When FFmpeg does not provide WASAPI support or the driver blocks the capture, ADsum falls back to an internal WASAPI loopback backend powered by the `soundcard` library, so the system output is still captured whenever Windows exposes it.
+
 Additional FFmpeg flags can be added via query parameters. For instance `args=-thread_queue_size 2048` (parsed with shell-style quoting) or `opt_timeout=5` (expanded to `-timeout 5`).
+
+> **Windows note:** when a WASAPI loopback device is selected, ADsum will fall back to the `sounddevice`
+> (PortAudio) backend automatically whenever the installed FFmpeg build lacks WASAPI support. No extra
+> configuration is required—just pick the speaker you want to capture (for example the Bluetooth output) and
+> keep `loopback=1` in the device string.
 
 Use the "Configure environment" menu entry to inspect or update any `ADSUM_` variables directly from the UI. Changes are persisted to your `.env` file for future sessions.
 

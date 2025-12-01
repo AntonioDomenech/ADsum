@@ -59,6 +59,7 @@ class FFmpegDeviceSpec:
     input_format: str
     input_target: str
     args_before_input: List[str]
+    input_options: List[str]
     args_after_input: List[str]
     sample_rate: int
     channels: int
@@ -240,11 +241,15 @@ def parse_ffmpeg_device(
 
     args_before: List[str] = []
     args_after: List[str] = []
+    input_options: List[str] = []
     sample_rate = int(default_sample_rate)
     channels = int(default_channels)
     sample_format = "f32le"
     chunk_frames: Optional[int] = None
     pending_chunk_ms: Optional[float] = None
+    sample_rate_overridden = False
+    channels_overridden = False
+    loopback_requested = False
 
     for key, value in parse_qsl(split.query, keep_blank_values=True):
         if key == "sample_rate" and value:
@@ -252,11 +257,15 @@ def parse_ffmpeg_device(
                 sample_rate = int(value)
             except ValueError as exc:
                 raise CaptureError(f"Invalid FFmpeg sample_rate: {value}") from exc
+            else:
+                sample_rate_overridden = True
         elif key == "channels" and value:
             try:
                 channels = int(value)
             except ValueError as exc:
                 raise CaptureError(f"Invalid FFmpeg channels: {value}") from exc
+            else:
+                channels_overridden = True
         elif key == "sample_fmt" and value:
             sample_format = value.lower()
         elif key == "chunk_frames" and value:
@@ -273,6 +282,18 @@ def parse_ffmpeg_device(
             args_before.extend(shlex.split(value))
         elif key == "out_args" and value:
             args_after.extend(shlex.split(value))
+        elif key == "loopback":
+            if input_format.lower() != "wasapi":
+                raise CaptureError("FFmpeg loopback option is only valid for WASAPI devices")
+            normalized_value = (value or "1").strip()
+            if normalized_value.lower() in {"true", "yes"}:
+                normalized_value = "1"
+            if normalized_value.lower() in {"false", "no"}:
+                normalized_value = "0"
+            if normalized_value not in {"0", "1"}:
+                raise CaptureError("FFmpeg loopback value must be 0 or 1")
+            input_options.extend(["-loopback", normalized_value])
+            loopback_requested = normalized_value == "1"
         elif key.startswith("opt_"):
             option = "-" + key[4:].replace("_", "-")
             if value:
@@ -301,6 +322,12 @@ def parse_ffmpeg_device(
     if channels <= 0:
         raise CaptureError("FFmpeg channels must be a positive integer")
 
+    if input_format.lower() == "wasapi":
+        if loopback_requested and not sample_rate_overridden:
+            sample_rate = max(sample_rate, 48000)
+        if loopback_requested and not channels_overridden:
+            channels = max(channels, 2)
+
     if pending_chunk_ms is not None and chunk_frames is None:
         chunk_frames = max(int(sample_rate * (pending_chunk_ms / 1000.0)), 1)
 
@@ -315,6 +342,7 @@ def parse_ffmpeg_device(
         input_format=input_format,
         input_target=input_target,
         args_before_input=args_before,
+        input_options=input_options,
         args_after_input=args_after,
         sample_rate=sample_rate,
         channels=channels,
@@ -446,6 +474,7 @@ class FFmpegCapture(AudioCapture):
         ]
         command.extend(self._spec.args_before_input)
         command.extend(["-f", self._spec.input_format])
+        command.extend(self._spec.input_options)
         command.extend(["-i", self._spec.input_target])
         command.extend(self._spec.args_after_input)
         command.extend(["-vn", "-sn", "-dn"])

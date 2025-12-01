@@ -87,6 +87,20 @@ def test_parse_ffmpeg_device_strips_dshow_quotes(monkeypatch) -> None:
     assert spec.input_target == "audio=@device_cm_{123}\\wave_{456}"
 
 
+def test_parse_ffmpeg_device_supports_wasapi_loopback() -> None:
+    spec = parse_ffmpeg_device(
+        'wasapi:"Speakers (Realtek(R) Audio)"?loopback=1',
+        default_sample_rate=48000,
+        default_channels=2,
+    )
+
+    assert spec.input_format == "wasapi"
+    assert spec.input_target == "Speakers (Realtek(R) Audio)"
+    assert "-loopback" in spec.input_options
+    loopback_index = spec.input_options.index("-loopback")
+    assert spec.input_options[loopback_index + 1] == "1"
+
+
 class _FakeProcess:
     def __init__(self, stdout_bytes: bytes) -> None:
         self.stdout = io.BufferedReader(io.BytesIO(stdout_bytes))

@@ -36,10 +36,17 @@ class FFmpegDevice:
     channels: Optional[int] = None
     sample_rate: Optional[int] = None
     details: Optional[str] = None
+    loopback: bool = False
 
 
 def _quote_dshow_value(value: str) -> str:
     """Return a DirectShow-friendly quoted value."""
+
+    return _quote_ffmpeg_value(value)
+
+
+def _quote_ffmpeg_value(value: str) -> str:
+    """Return a quoted value safe for FFmpeg command arguments."""
 
     trimmed = value.strip()
     if trimmed.startswith('"') and trimmed.endswith('"') and len(trimmed) >= 2:
@@ -69,6 +76,20 @@ def recommended_ffmpeg_device_spec(device: FFmpegDevice) -> Optional[str]:
             quoted = _quote_dshow_value(device.name)
             return f"dshow:audio={quoted}"
         return None
+
+    if fmt == "wasapi":
+        target = (device.name or "").strip()
+        if not target:
+            target = (device.details or "").strip()
+        if not target:
+            return None
+        quoted = _quote_ffmpeg_value(target)
+        specification = f"wasapi:{quoted}"
+        if device.loopback and "?" not in specification:
+            specification = f"{specification}?loopback=1"
+        elif device.loopback:
+            specification = f"{specification}&loopback=1"
+        return specification
 
     if fmt == "avfoundation":
         if device.index is not None:
@@ -139,7 +160,14 @@ def format_device_table(devices: Optional[Iterable[DeviceInfo]] = None) -> str:
                 "No FFmpeg audio input devices were reported.",
             )
 
-        return _format_ffmpeg_device_table(ffmpeg_devices)
+        table = _format_ffmpeg_device_table(ffmpeg_devices)
+        if os.name == "nt":
+            table = (
+                f"{table}\n\n"
+                "Tip: Use 'wasapi:default?loopback=1' to capture the current system output "
+                "while speakers or Bluetooth headsets stay active."
+            )
+        return table
 
     device_list = list(devices)
 
@@ -167,60 +195,100 @@ def list_ffmpeg_devices() -> List[FFmpegDevice]:
     executable = ensure_ffmpeg_available(binary) or binary
 
     platform = _detect_ffmpeg_platform()
-    command: Sequence[str]
-    parser: Callable[[str], List[FFmpegDevice]]
+    tasks: List[tuple[Sequence[str], Callable[[str], List[FFmpegDevice]]]] = []
     if platform == "windows":
-        command = [
-            executable,
-            "-hide_banner",
-            "-list_devices",
-            "true",
-            "-f",
-            "dshow",
-            "-i",
-            "dummy",
-        ]
-        parser = _parse_ffmpeg_dshow_devices
+        tasks.append(
+            (
+                [
+                    executable,
+                    "-hide_banner",
+                    "-list_devices",
+                    "true",
+                    "-f",
+                    "dshow",
+                    "-i",
+                    "dummy",
+                ],
+                _parse_ffmpeg_dshow_devices,
+            )
+        )
+        tasks.append(
+            (
+                [
+                    executable,
+                    "-hide_banner",
+                    "-list_devices",
+                    "true",
+                    "-f",
+                    "wasapi",
+                    "-i",
+                    "dummy",
+                ],
+                _parse_ffmpeg_wasapi_devices,
+            )
+        )
     elif platform == "darwin":
-        command = [
-            executable,
-            "-hide_banner",
-            "-list_devices",
-            "true",
-            "-f",
-            "avfoundation",
-            "-i",
-            "",
-        ]
-        parser = _parse_ffmpeg_avfoundation_devices
+        tasks.append(
+            (
+                [
+                    executable,
+                    "-hide_banner",
+                    "-list_devices",
+                    "true",
+                    "-f",
+                    "avfoundation",
+                    "-i",
+                    "",
+                ],
+                _parse_ffmpeg_avfoundation_devices,
+            )
+        )
     elif platform == "linux":
-        command = [
-            executable,
-            "-hide_banner",
-            "-sources",
-            "pulse",
-        ]
-        parser = _parse_ffmpeg_pulse_devices
+        tasks.append(
+            (
+                [
+                    executable,
+                    "-hide_banner",
+                    "-sources",
+                    "pulse",
+                ],
+                _parse_ffmpeg_pulse_devices,
+            )
+        )
     else:
         raise FFmpegDeviceEnumerationError(
             "FFmpeg device enumeration is not supported on this platform."
         )
 
-    try:
-        completed = subprocess.run(  # noqa: S603,S607 - trusted binary determined by settings
-            command,
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-    except FileNotFoundError as exc:  # pragma: no cover - exercised via FFmpegBinaryNotFoundError
-        raise FFmpegBinaryNotFoundError(binary) from exc
-    except OSError as exc:
-        raise FFmpegDeviceEnumerationError(str(exc)) from exc
+    aggregated: List[FFmpegDevice] = []
+    errors: List[str] = []
 
-    output = "\n".join(filter(None, [completed.stdout, completed.stderr]))
-    devices = parser(output)
-    return devices
+    for command, parser in tasks:
+        try:
+            completed = subprocess.run(  # noqa: S603,S607 - trusted binary determined by settings
+                command,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+        except FileNotFoundError as exc:  # pragma: no cover - exercised via FFmpegBinaryNotFoundError
+            raise FFmpegBinaryNotFoundError(binary) from exc
+        except OSError as exc:
+            errors.append(str(exc))
+            continue
+
+        output = "\n".join(filter(None, [completed.stdout, completed.stderr]))
+        try:
+            devices = parser(output)
+        except Exception as exc:  # pragma: no cover - defensive
+            errors.append(str(exc))
+            continue
+        aggregated.extend(devices)
+
+    if not aggregated and errors:
+        raise FFmpegDeviceEnumerationError("; ".join(errors))
+
+    return aggregated
 
 
 def _format_ffmpeg_instructions(binary: str) -> str:
@@ -237,7 +305,8 @@ def _format_ffmpeg_instructions(binary: str) -> str:
         f"Using FFmpeg binary: {binary}",
         "",
         "Discover devices with:",
-        f"  Windows: {binary} -hide_banner -list_devices true -f dshow -i dummy",
+        f"  Windows (DirectShow): {binary} -hide_banner -list_devices true -f dshow -i dummy",
+        f"  Windows (WASAPI):    {binary} -hide_banner -list_devices true -f wasapi -i dummy",
         f"  macOS:   {binary} -hide_banner -list_devices true -f avfoundation -i \"\"",
         f"  Linux:   {binary} -hide_banner -sources pulse",
     ]
@@ -270,7 +339,7 @@ def _format_ffmpeg_device_table(devices: Sequence[FFmpegDevice]) -> str:
                 f"{channels:>2}",
                 f"{sample_rate:>7}",
                 f"{device.input_format:<8.8}",
-                f"{'n/a':>8}",
+                f"{('yes' if device.loopback else 'n/a'):>8}",
             )
         )
     return "\n".join(lines)
@@ -313,6 +382,78 @@ def _parse_ffmpeg_dshow_devices(output: str) -> List[FFmpegDevice]:
             input_format="dshow",
         )
         devices.append(device)
+    return devices
+
+
+def _parse_ffmpeg_wasapi_devices(output: str) -> List[FFmpegDevice]:
+    devices: List[FFmpegDevice] = []
+    current_kind: Optional[str] = None
+    pending_index: Optional[int] = None
+
+    for line in output.splitlines():
+        payload = _ffmpeg_payload(line)
+        if not payload:
+            continue
+
+        lowered = payload.lower()
+        if "wasapi playback devices" in lowered or "audio render devices" in lowered:
+            current_kind = "render"
+            pending_index = None
+            continue
+        if "wasapi capture devices" in lowered or "audio capture devices" in lowered:
+            current_kind = "capture"
+            pending_index = None
+            continue
+
+        alt_match = re.search(
+            r"alternative name\s*:?-?\s*['\"]([^'\"]+)['\"]", payload, re.IGNORECASE
+        )
+        if alt_match and devices:
+            devices[-1].details = alt_match.group(1)
+            continue
+
+        direct_match = re.match(r"\s*(\d+)\s*:\s*['\"]([^'\"]+)['\"]", payload)
+        if direct_match:
+            index = int(direct_match.group(1))
+            name = direct_match.group(2).strip()
+            devices.append(
+                FFmpegDevice(
+                    index=index,
+                    name=name,
+                    input_format="wasapi",
+                    loopback=current_kind == "render",
+                )
+            )
+            pending_index = None
+            continue
+
+        index_match = re.match(
+            r"(?:input|output|render|capture)\s*device\s*(?:#|number)?\s*(\d+)",
+            payload,
+            re.IGNORECASE,
+        )
+        if index_match:
+            pending_index = int(index_match.group(1))
+            continue
+
+        name_match = re.search(r"['\"]([^'\"]+)['\"]", payload)
+        if name_match and pending_index is not None:
+            name = name_match.group(1).strip()
+            devices.append(
+                FFmpegDevice(
+                    index=pending_index,
+                    name=name,
+                    input_format="wasapi",
+                    loopback=current_kind == "render",
+                )
+            )
+            pending_index = None
+            continue
+
+        if "loopback" in lowered and devices:
+            devices[-1].loopback = True
+
+    devices.sort(key=lambda item: (not item.loopback, item.index))
     return devices
 
 

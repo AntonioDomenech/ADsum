@@ -5,8 +5,7 @@ from __future__ import annotations
 import sys
 from dataclasses import dataclass
 from enum import Enum
-from functools import wraps
-from typing import Any, Callable, Optional, TypeVar, cast
+from typing import Any, Callable, Mapping, Optional, TypeVar, Union, cast
 
 import typer
 
@@ -88,7 +87,6 @@ F = TypeVar("F", bound=Callable[..., Any])
 
 
 def with_common_ui_options(command: F) -> F:
-    @wraps(command)
     def wrapper(
         name: Optional[str] = SESSION_NAME_ARGUMENT,
         mic_device: Optional[str] = MIC_DEVICE_OPTION,
@@ -112,7 +110,21 @@ def with_common_ui_options(command: F) -> F:
             interface=interface,
         )
 
+    wrapper.__name__ = getattr(command, "__name__", wrapper.__name__)
+    wrapper.__qualname__ = getattr(command, "__qualname__", wrapper.__qualname__)
+    wrapper.__doc__ = getattr(command, "__doc__", wrapper.__doc__)
+    wrapper.__module__ = getattr(command, "__module__", wrapper.__module__)
+
     return cast(F, wrapper)
+
+
+def _normalise_backend_choice(value: Union[BackendChoice, str]) -> BackendChoice:
+    if isinstance(value, BackendChoice):
+        return value
+    try:
+        return BackendChoice(value)
+    except ValueError as exc:
+        raise typer.BadParameter("Backend must be one of: none, dummy, openai") from exc
 
 
 @app.callback()
@@ -128,8 +140,8 @@ def _launch_ui(
     mic_device: Optional[str],
     system_device: Optional[str],
     mix_down: bool,
-    transcription_backend: BackendChoice,
-    notes_backend: BackendChoice,
+    transcription_backend: Union[BackendChoice, str],
+    notes_backend: Union[BackendChoice, str],
     sample_rate: Optional[int],
     channels: Optional[int],
     interface: InterfaceChoice,
@@ -140,6 +152,9 @@ def _launch_ui(
         system_device if system_device is not None else settings.default_system_device
     )
 
+    transcription_choice = _normalise_backend_choice(transcription_backend)
+    notes_choice = _normalise_backend_choice(notes_backend)
+
     launch_config = UILaunchConfig(
         settings=settings,
         sample_rate=sample_rate,
@@ -148,35 +163,56 @@ def _launch_ui(
         default_name=name,
         default_mic=resolved_mic,
         default_system=resolved_system,
-        transcription_backend_name=transcription_backend,
-        notes_backend_name=notes_backend,
+        transcription_backend_name=transcription_choice,
+        notes_backend_name=notes_choice,
     )
 
-    ui_instance = _resolve_ui(interface, launch_config)
+    ui_instance = _resolve_ui(interface, launch_config.to_kwargs())
     ui_instance.run()
 
 
-def _resolve_ui(interface: InterfaceChoice, config: UILaunchConfig):
+def _resolve_ui(
+    interface: Union[InterfaceChoice, str],
+    config: Union[UILaunchConfig, Mapping[str, Any]],
+):
     """Return the UI implementation based on the requested interface."""
 
-    requested_interface = interface
-    normalized = interface
+    requested_value = interface.value if isinstance(interface, InterfaceChoice) else str(interface)
 
-    if normalized not in {InterfaceChoice.AUTO, InterfaceChoice.CONSOLE, InterfaceChoice.WINDOW}:
+    if isinstance(interface, InterfaceChoice):
+        normalized = interface
+    else:
+        try:
+            normalized = InterfaceChoice(interface)
+        except ValueError as exc:
+            raise typer.BadParameter("Interface must be one of: auto, console, window") from exc
+
+    if normalized not in {
+        InterfaceChoice.AUTO,
+        InterfaceChoice.CONSOLE,
+        InterfaceChoice.WINDOW,
+    }:
         raise typer.BadParameter("Interface must be one of: auto, console, window")
 
     if normalized is InterfaceChoice.AUTO:
         normalized = InterfaceChoice.WINDOW if sys.platform.startswith("win") else InterfaceChoice.CONSOLE
+
+    if isinstance(config, UILaunchConfig):
+        ui_kwargs = config.to_kwargs()
+    elif isinstance(config, Mapping):
+        ui_kwargs = dict(config)
+    else:  # pragma: no cover - defensive fallback
+        raise TypeError("UI configuration must be a mapping or UILaunchConfig instance")
 
     if normalized is InterfaceChoice.WINDOW:
         try:
             from .ui import RecordingWindowUI
 
             if RecordingWindowUI.is_supported():
-                return RecordingWindowUI(**config.to_kwargs())
+                return RecordingWindowUI(**ui_kwargs)
             typer.secho(
                 "Window UI is not available on this system. "
-                f"Requested interface '{requested_interface.value}'. "
+                f"Requested interface '{requested_value}'. "
                 "Falling back to console interface.",
                 err=True,
                 fg="yellow",
@@ -184,13 +220,13 @@ def _resolve_ui(interface: InterfaceChoice, config: UILaunchConfig):
         except Exception as exc:  # pragma: no cover - runtime fallback
             typer.secho(
                 f"Failed to initialise the window UI ({exc}). "
-                f"Requested interface '{requested_interface.value}'. "
+                f"Requested interface '{requested_value}'. "
                 "Falling back to console.",
                 err=True,
                 fg="yellow",
             )
 
-    return RecordingConsoleUI(**config.to_kwargs())
+    return RecordingConsoleUI(**ui_kwargs)
 
 
 @app.command()

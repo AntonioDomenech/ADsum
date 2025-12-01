@@ -16,6 +16,9 @@ dependencies = [
     "pydantic>=2.6",
     "pydantic-settings>=2.6",
     "openai>=1.12",
+    "sounddevice>=0.4",
+    "soundcard>=0.4.3",
+    "miniaudio>=1.61",
 ]
 
 [project.scripts]

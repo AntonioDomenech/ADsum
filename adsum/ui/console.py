@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import threading
 import time
+import os
 from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
@@ -87,6 +88,8 @@ class RecordingConsoleUI:
             if default_system is not None
             else self._settings.default_system_device
         )
+        if os.name == "nt" and self._default_system is None:
+            self._default_system = "wasapi:default?loopback=1"
         self._transcription_backend_name = transcription_backend_name or "none"
         self._notes_backend_name = notes_backend_name or "none"
 
@@ -393,6 +396,9 @@ class RecordingConsoleUI:
         if value == DISABLED_DEVICE_SENTINEL:
             return "disabled"
         if value:
+            trimmed = value.strip().lower()
+            if trimmed == "wasapi:default?loopback=1":
+                return "system loopback (WASAPI)"
             return value
         return "system default"
 

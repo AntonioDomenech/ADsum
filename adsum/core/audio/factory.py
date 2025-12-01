@@ -113,6 +113,75 @@ def create_capture(request: CaptureRequest) -> Optional[AudioCapture]:
         if spec.chunk_frames is not None:
             chunk_frames = max(spec.chunk_frames, 1)
 
+        def _is_loopback_requested() -> bool:
+            options = spec.input_options
+            for index in range(0, len(options), 2):
+                key = options[index]
+                try:
+                    value = options[index + 1]
+                except IndexError:
+                    value = None
+                if key == "-loopback" and value == "1":
+                    return True
+            return False
+
+        if spec.input_format.lower() == "wasapi" and _is_loopback_requested():
+            def _normalize_target(raw: Optional[str]) -> Optional[str]:
+                if raw is None:
+                    return None
+                value = raw.strip()
+                if not value:
+                    return None
+                if value.lower() in {"default", "auto"}:
+                    return None
+                if value.startswith('"') and value.endswith('"') and len(value) >= 2:
+                    value = value[1:-1]
+                return value
+
+            normalized_target = _normalize_target(spec.input_target)
+
+            try:
+                from .soundcard_backend import SoundCardLoopbackCapture
+            except ImportError:
+                LOGGER.debug("soundcard backend unavailable; trying alternative loopback capture")
+            else:
+                try:
+                    return SoundCardLoopbackCapture(
+                        info=capture_info,
+                        target=normalized_target,
+                        sample_rate=spec.sample_rate,
+                        channels=spec.channels,
+                        chunk_frames=chunk_frames,
+                    )
+                except CaptureError as exc:
+                    LOGGER.warning(
+                        "soundcard loopback capture failed for %s (%s); attempting sounddevice: %s",
+                        request.channel,
+                        request.device,
+                        exc,
+                    )
+
+            try:
+                from .sounddevice_backend import SoundDeviceLoopbackCapture
+            except ImportError:
+                LOGGER.debug("sounddevice backend unavailable; defaulting to FFmpeg loopback capture")
+            else:
+                try:
+                    return SoundDeviceLoopbackCapture(
+                        info=capture_info,
+                        target=normalized_target,
+                        sample_rate=spec.sample_rate,
+                        channels=spec.channels,
+                        chunk_frames=chunk_frames,
+                    )
+                except CaptureError as exc:
+                    LOGGER.warning(
+                        "sounddevice loopback capture failed for %s (%s); falling back to FFmpeg: %s",
+                        request.channel,
+                        request.device,
+                        exc,
+                    )
+
         resolved_binary = _resolve_binary(settings.ffmpeg_binary)
 
         if resolved_binary is None:

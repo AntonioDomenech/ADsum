@@ -71,6 +71,53 @@ def test_list_ffmpeg_devices_parses_dshow_output(monkeypatch: pytest.MonkeyPatch
     ]
     assert results[0].details == "@device_cm_{123ABC}"
     assert all(device.input_format == "dshow" for device in results)
+    assert all(device.loopback is False for device in results)
+
+
+def test_list_ffmpeg_devices_parses_wasapi_output(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Windows FFmpeg listings should surface WASAPI render devices with loopback flag."""
+
+    dshow_listing = textwrap.dedent(
+        """
+        [dshow @ 0x123] DirectShow audio devices
+        [dshow @ 0x123]  "Microphone (Realtek(R) Audio)" (audio)
+        """
+    ).strip()
+    wasapi_listing = textwrap.dedent(
+        """
+        [wasapi @ 0x456] WASAPI playback devices:
+        [wasapi @ 0x456] 0: 'Speakers (Realtek(R) Audio)'
+        [wasapi @ 0x456] 1: 'Auriculares con micrófono (Redmi Buds 6 Pro)'
+        [wasapi @ 0x456]     Alternative name '@{LOOPBACK_GUID}'
+        [wasapi @ 0x456] WASAPI capture devices:
+        [wasapi @ 0x456] 0: 'Micrófono (Realtek(R) Audio)'
+        """
+    ).strip()
+
+    def fake_run(command, **kwargs):
+        format_index = command.index("-f") + 1 if "-f" in command else None
+        input_format = command[format_index] if format_index is not None else ""
+        if input_format == "dshow":
+            return _mock_ffmpeg_run(dshow_listing)
+        if input_format == "wasapi":
+            return _mock_ffmpeg_run(wasapi_listing)
+        raise AssertionError(f"Unexpected command: {command}")
+
+    monkeypatch.setattr(devices, "ensure_ffmpeg_available", lambda binary: binary)
+    monkeypatch.setattr(devices, "get_settings", lambda: config.Settings(ffmpeg_binary="ffmpeg"))
+    monkeypatch.setattr(devices, "_detect_ffmpeg_platform", lambda: "windows")
+    monkeypatch.setattr(devices.subprocess, "run", fake_run)
+
+    results = devices.list_ffmpeg_devices()
+
+    wasapi_devices = [device for device in results if device.input_format == "wasapi"]
+    assert [device.name for device in wasapi_devices] == [
+        "Speakers (Realtek(R) Audio)",
+        "Auriculares con micrófono (Redmi Buds 6 Pro)",
+        "Micrófono (Realtek(R) Audio)",
+    ]
+    assert [device.loopback for device in wasapi_devices] == [True, True, False]
+    assert wasapi_devices[1].details == "@{LOOPBACK_GUID}"
 
 
 def test_list_ffmpeg_devices_handles_dshow_without_headers(
@@ -102,6 +149,19 @@ def test_list_ffmpeg_devices_handles_dshow_without_headers(
         "Varios micrófonos (2- Realtek(R) Audio)",
     ]
     assert [device.details for device in results] == ["@device_cm_{AUDIO_MIX}", "@device_cm_{AUDIO_MIC}"]
+
+
+def test_recommended_ffmpeg_device_spec_adds_wasapi_loopback() -> None:
+    device = devices.FFmpegDevice(
+        index=0,
+        name="Speakers (Realtek(R) Audio)",
+        input_format="wasapi",
+        loopback=True,
+    )
+
+    spec = devices.recommended_ffmpeg_device_spec(device)
+
+    assert spec == 'wasapi:"Speakers (Realtek(R) Audio)"?loopback=1'
 
 
 def test_list_ffmpeg_devices_parses_avfoundation_output(monkeypatch: pytest.MonkeyPatch) -> None:
