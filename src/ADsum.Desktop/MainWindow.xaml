@@ -1,0 +1,134 @@
+<Window x:Class="ADsum.Desktop.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="ADsum" Height="820" Width="1180" MinHeight="680" MinWidth="980"
+        Background="{StaticResource AppBackgroundBrush}">
+    <Grid Margin="24">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="92" />
+            <RowDefinition Height="*" />
+        </Grid.RowDefinitions>
+
+        <DockPanel Grid.Row="0">
+            <StackPanel DockPanel.Dock="Left" VerticalAlignment="Center">
+                <TextBlock Text="ADsum v2" Foreground="{StaticResource AccentBrush}" FontSize="12" FontWeight="Bold" />
+                <TextBlock Text="Meeting Recorder" FontSize="34" FontWeight="Bold" />
+            </StackPanel>
+            <Border DockPanel.Dock="Right" Background="White" BorderBrush="{StaticResource LineBrush}" BorderThickness="1"
+                    CornerRadius="18" Padding="18,8" VerticalAlignment="Center">
+                <TextBlock x:Name="StateText" Text="Idle" FontWeight="Bold" Foreground="{StaticResource MutedBrush}" />
+            </Border>
+        </DockPanel>
+
+        <Grid Grid.Row="1">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="350" />
+                <ColumnDefinition Width="18" />
+                <ColumnDefinition Width="*" />
+            </Grid.ColumnDefinitions>
+
+            <Border Grid.Column="0" Style="{StaticResource Panel}">
+                <StackPanel>
+                    <TextBlock Text="Session" Foreground="{StaticResource MutedBrush}" FontWeight="SemiBold" />
+                    <TextBox x:Name="SessionNameBox" Margin="0,7,0,18" MinHeight="38" Padding="8" />
+
+                    <TextBlock Text="Microphone" Foreground="{StaticResource MutedBrush}" FontWeight="SemiBold" />
+                    <ComboBox x:Name="MicrophoneCombo" DisplayMemberPath="Name" SelectedValuePath="Id" Margin="0,7,0,4" MinHeight="38" />
+                    <TextBlock x:Name="MicrophoneWarningText" Foreground="#9A6700" TextWrapping="Wrap" FontSize="12" MinHeight="34" />
+
+                    <TextBlock Text="System audio" Foreground="{StaticResource MutedBrush}" FontWeight="SemiBold" />
+                    <ComboBox x:Name="OutputCombo" DisplayMemberPath="Name" SelectedValuePath="Id" Margin="0,7,0,4" MinHeight="38" />
+                    <TextBlock x:Name="OutputWarningText" Foreground="#9A6700" TextWrapping="Wrap" FontSize="12" MinHeight="34" />
+
+                    <Grid Margin="0,12,0,18">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="10" />
+                            <ColumnDefinition Width="*" />
+                        </Grid.ColumnDefinitions>
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="10" />
+                            <RowDefinition Height="Auto" />
+                        </Grid.RowDefinitions>
+                        <Button x:Name="RefreshButton" Grid.Column="0" Grid.Row="0" Content="Refresh" Click="RefreshButton_Click" />
+                        <Button x:Name="TestButton" Grid.Column="2" Grid.Row="0" Content="Test 6 s" Click="TestButton_Click" />
+                        <Button x:Name="RecordButton" Grid.Column="0" Grid.Row="2" Content="Record" Style="{StaticResource PrimaryButton}" Click="RecordButton_Click" />
+                        <Button x:Name="StopButton" Grid.Column="2" Grid.Row="2" Content="Stop" Style="{StaticResource DangerButton}" Click="StopButton_Click" IsEnabled="False" />
+                    </Grid>
+
+                    <Border BorderBrush="{StaticResource LineBrush}" BorderThickness="0,1,0,0" Padding="0,16,0,0">
+                        <StackPanel>
+                            <TextBlock Text="OpenAI key" Foreground="{StaticResource MutedBrush}" FontWeight="SemiBold" />
+                            <Grid Margin="0,7,0,7">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="8" />
+                                    <ColumnDefinition Width="86" />
+                                </Grid.ColumnDefinitions>
+                                <PasswordBox x:Name="ApiKeyBox" MinHeight="38" Padding="8" />
+                                <Button Grid.Column="2" x:Name="SaveKeyButton" Content="Save" Click="SaveKeyButton_Click" />
+                            </Grid>
+                            <TextBlock x:Name="KeyStateText" Text="Checking key..." Foreground="{StaticResource MutedBrush}" FontSize="12" />
+                        </StackPanel>
+                    </Border>
+                </StackPanel>
+            </Border>
+
+            <Grid Grid.Column="2">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="170" />
+                    <RowDefinition Height="18" />
+                    <RowDefinition Height="220" />
+                    <RowDefinition Height="18" />
+                    <RowDefinition Height="*" />
+                </Grid.RowDefinitions>
+
+                <Border Grid.Row="0" Style="{StaticResource Panel}">
+                    <StackPanel>
+                        <DockPanel Margin="0,0,0,18">
+                            <TextBlock Text="Levels" FontSize="18" FontWeight="Bold" DockPanel.Dock="Left" />
+                            <TextBlock x:Name="ElapsedText" Text="00:00" Foreground="{StaticResource MutedBrush}" FontWeight="Bold" DockPanel.Dock="Right" />
+                        </DockPanel>
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="82" />
+                                <ColumnDefinition Width="*" />
+                            </Grid.ColumnDefinitions>
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="34" />
+                                <RowDefinition Height="34" />
+                            </Grid.RowDefinitions>
+                            <TextBlock Grid.Row="0" Text="Mic" Foreground="{StaticResource MutedBrush}" FontWeight="SemiBold" VerticalAlignment="Center" />
+                            <ProgressBar x:Name="MicLevelBar" Grid.Column="1" Grid.Row="0" Height="14" Maximum="1" />
+                            <TextBlock Grid.Row="1" Text="System" Foreground="{StaticResource MutedBrush}" FontWeight="SemiBold" VerticalAlignment="Center" />
+                            <ProgressBar x:Name="SystemLevelBar" Grid.Column="1" Grid.Row="1" Height="14" Maximum="1" />
+                        </Grid>
+                    </StackPanel>
+                </Border>
+
+                <Border Grid.Row="2" Style="{StaticResource Panel}">
+                    <DockPanel>
+                        <DockPanel DockPanel.Dock="Top" Margin="0,0,0,14">
+                            <TextBlock Text="Last Recording" FontSize="18" FontWeight="Bold" DockPanel.Dock="Left" />
+                            <Button x:Name="TranscribeButton" Content="Transcribe" DockPanel.Dock="Right" MinWidth="112" Click="TranscribeButton_Click" IsEnabled="False" />
+                        </DockPanel>
+                        <TextBlock x:Name="ResultText" Text="No recording yet." Foreground="{StaticResource MutedBrush}" TextWrapping="Wrap" />
+                    </DockPanel>
+                </Border>
+
+                <Border Grid.Row="4" Style="{StaticResource Panel}">
+                    <DockPanel>
+                        <DockPanel DockPanel.Dock="Top" Margin="0,0,0,14">
+                            <TextBlock Text="Transcript" FontSize="18" FontWeight="Bold" DockPanel.Dock="Left" />
+                            <TextBlock x:Name="TranscriptStateText" Text="Ready" Foreground="{StaticResource MutedBrush}" FontWeight="SemiBold" DockPanel.Dock="Right" />
+                        </DockPanel>
+                        <TextBox x:Name="TranscriptBox" Text="Record audio, then transcribe." TextWrapping="Wrap"
+                                 AcceptsReturn="True" IsReadOnly="True" VerticalScrollBarVisibility="Auto" BorderThickness="0"
+                                 Background="Transparent" FontSize="14" />
+                    </DockPanel>
+                </Border>
+            </Grid>
+        </Grid>
+    </Grid>
+</Window>

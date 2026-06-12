@@ -1,19 +1,13 @@
 # ADsum v2 Windows Desktop
 
-ADsum v2 is a Windows-first desktop recorder with a local UI and native audio capture.
+ADsum v2 is a Windows-first .NET desktop recorder with a WPF UI and native WASAPI audio capture.
+
+OpenAI transcription can use a key saved in the app, `ADSUM_OPENAI_API_KEY` / `OPENAI_API_KEY`, or a local `.env` file with either of those names. Long mixed recordings are split into upload-sized WAV chunks before transcription.
 
 ## Run from source
 
 ```powershell
-python -m venv .venv
-.\.venv\Scripts\python.exe -m pip install -e .
-.\.venv\Scripts\adsum.exe desktop
-```
-
-If the desktop webview is unavailable, use:
-
-```powershell
-.\.venv\Scripts\adsum.exe desktop --browser
+dotnet run --project .\src\ADsum.Desktop\ADsum.Desktop.csproj
 ```
 
 ## Build a Windows artifact
@@ -22,12 +16,12 @@ If the desktop webview is unavailable, use:
 .\scripts\build_windows.ps1
 ```
 
-The build script creates `dist\ADsum-windows.zip`, which can be attached to a GitHub Release.
+The .NET build script creates `dist\ADsum-windows-dotnet.zip`, a self-contained Windows bundle that can be attached to a GitHub Release. People downloading that ZIP do not need to install the .NET runtime.
 
 ## Manual recording test
 
 1. Open Windows sound settings and set the headset you want to hear through as the current output.
-2. Launch ADsum with `.\.venv\Scripts\adsum.exe desktop`.
+2. Launch ADsum with `dotnet run --project .\src\ADsum.Desktop\ADsum.Desktop.csproj`, or run `ADsum.exe` from the published ZIP.
 3. Select the headset microphone in **Microphone**.
 4. Select the same headset or speaker output in **System audio**.
 5. Click **Test 6 s**.

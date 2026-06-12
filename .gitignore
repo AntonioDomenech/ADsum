@@ -11,11 +11,17 @@ __pycache__/
 .DS_Store
 .idea/
 .vscode/
+.vs/
 build/
 dist/
 *.spec
 site/
 adsum.egg-info/
+bin/
+obj/
+*.user
+*.suo
+dotnet-*.json
 recordings/
 .env
 .env.*

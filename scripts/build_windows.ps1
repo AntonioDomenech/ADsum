@@ -3,27 +3,26 @@ $ErrorActionPreference = "Stop"
 $Root = Split-Path -Parent $PSScriptRoot
 Set-Location $Root
 
-if (-not (Test-Path ".venv\Scripts\python.exe")) {
-    python -m venv .venv
+$Dotnet = "dotnet"
+if (Test-Path "C:\Program Files\dotnet\dotnet.exe") {
+    $Dotnet = "C:\Program Files\dotnet\dotnet.exe"
 }
 
-.\.venv\Scripts\python.exe -m pip install --upgrade pip
-.\.venv\Scripts\python.exe -m pip install -e ".[build]"
+$PublishDir = "dist\ADsum-win-x64"
+$ZipPath = "dist\ADsum-windows-dotnet.zip"
 
-.\.venv\Scripts\python.exe -m PyInstaller `
-    --noconfirm `
-    --clean `
-    --name ADsum `
-    --windowed `
-    --add-data "adsum\desktop\static;adsum\desktop\static" `
-    --collect-all soundcard `
-    --collect-all sounddevice `
-    --collect-all webview `
-    --hidden-import webview `
-    --hidden-import webview.platforms.edgechromium `
-    --hidden-import clr_loader `
-    --hidden-import pythonnet `
-    "scripts\adsum_desktop_entry.py"
+& $Dotnet publish "src\ADsum.Desktop\ADsum.Desktop.csproj" `
+    -c Release `
+    -r win-x64 `
+    --self-contained true `
+    -p:PublishSingleFile=true `
+    -p:IncludeNativeLibrariesForSelfExtract=true `
+    -p:EnableCompressionInSingleFile=true `
+    -o $PublishDir
 
-Compress-Archive -Force -Path "dist\ADsum\*" -DestinationPath "dist\ADsum-windows.zip"
-Write-Host "Built dist\ADsum-windows.zip"
+if (Test-Path $ZipPath) {
+    Remove-Item -LiteralPath $ZipPath -Force
+}
+
+Compress-Archive -Force -Path "$PublishDir\*" -DestinationPath $ZipPath
+Write-Host "Built $ZipPath"

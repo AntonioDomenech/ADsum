@@ -4,19 +4,17 @@ ADsum is a cross-platform meeting recorder designed to capture system audio and 
 
 ## ADsum v2 desktop app
 
-ADsum v2 adds a Windows-first desktop experience with a local modern UI and native audio capture. It records the selected microphone and a WASAPI loopback stream from the selected output device at the same time, so you can capture your headset mic and the meeting audio you are hearing without taking exclusive control of playback.
+ADsum v2 adds a Windows-first .NET desktop app with a modern WPF UI and native WASAPI audio capture. It records the selected microphone and a WASAPI loopback stream from the selected output device at the same time, so you can capture your headset mic and the meeting audio you are hearing without taking exclusive control of playback.
 
 Run it from source:
 
-```bash
-adsum desktop
+```powershell
+dotnet run --project .\src\ADsum.Desktop\ADsum.Desktop.csproj
 ```
 
-If the embedded desktop webview is unavailable:
+The desktop app targets .NET 10 on Windows.
 
-```bash
-adsum desktop --browser
-```
+OpenAI transcription can use a key saved in the app, `ADSUM_OPENAI_API_KEY` / `OPENAI_API_KEY`, or a local `.env` file with either of those names. Long mixed recordings are split into upload-sized WAV chunks before transcription.
 
 Build a Windows release artifact:
 
@@ -24,7 +22,7 @@ Build a Windows release artifact:
 .\scripts\build_windows.ps1
 ```
 
-The build creates `dist\ADsum-windows.zip`, which can be attached to a GitHub Release. See `docs/v2-windows-desktop.md` for the manual audio test checklist.
+The build creates `dist\ADsum-windows-dotnet.zip`, a self-contained Windows bundle that can be attached to a GitHub Release. People downloading that ZIP do not need to install the .NET runtime. See `docs/v2-windows-desktop.md` for the manual audio test checklist.
 
 ## Features
 

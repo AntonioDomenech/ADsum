@@ -19,12 +19,6 @@ dependencies = [
     "sounddevice>=0.4",
     "soundcard>=0.4.3",
     "miniaudio>=1.61",
-    "pywebview>=5.0",
-]
-
-[project.optional-dependencies]
-build = [
-    "pyinstaller>=6.0",
 ]
 
 [project.scripts]
@@ -33,9 +27,6 @@ adsum = "adsum.cli:app"
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["adsum*"]
-
-[tool.setuptools.package-data]
-"adsum.desktop" = ["static/*"]
 
 [tool.pytest.ini_options]
 minversion = "7.0"
