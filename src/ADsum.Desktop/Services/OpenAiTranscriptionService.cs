@@ -3,6 +3,7 @@ using System.Net.Http;
 using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
+using NAudio.MediaFoundation;
 using NAudio.Wave;
 
 namespace ADsum.Desktop.Services;
@@ -10,7 +11,9 @@ namespace ADsum.Desktop.Services;
 public sealed class OpenAiTranscriptionService
 {
     private const long MaxUploadBytes = 24L * 1024 * 1024;
-    private static readonly TimeSpan MaxChunkDuration = TimeSpan.FromMinutes(5);
+    private const long UploadSafetyBytes = 1024 * 1024;
+    private const int MaximumSpeechBitRate = 32000;
+    private const int MinimumSpeechBitRate = 8000;
     private static readonly TimeSpan RequestTimeout = TimeSpan.FromMinutes(30);
     private const string DiarizationModel = "gpt-4o-transcribe-diarize";
     private static readonly HttpClient Client = new()
@@ -34,7 +37,7 @@ public sealed class OpenAiTranscriptionService
             throw new FileNotFoundException("Audio file was not found.", audioPath);
         }
 
-        if (!ShouldChunk(audioPath))
+        if (CanUploadSingleFile(audioPath))
         {
             progress?.Report("Diarizing audio");
             var transcript = await TranscribeSingleFileAsync(audioPath, apiKey, TimeSpan.Zero, cancellationToken);
@@ -44,6 +47,15 @@ public sealed class OpenAiTranscriptionService
         var tempDirectory = Path.Combine(Path.GetTempPath(), "ADsum", "TranscriptionChunks", Guid.NewGuid().ToString("N"));
         try
         {
+            progress?.Report("Compressing recording for upload");
+            var compressedPath = TryCreateCompressedUploadCopy(audioPath, tempDirectory);
+            if (compressedPath is not null)
+            {
+                progress?.Report("Diarizing full recording");
+                var transcript = await TranscribeSingleFileAsync(compressedPath, apiKey, TimeSpan.Zero, cancellationToken);
+                return FormatDiarizedTranscript(transcript, wasChunked: false);
+            }
+
             var chunks = CreateUploadChunks(audioPath, tempDirectory);
             var segments = new List<DiarizedSegment>();
             var fallbackText = new StringBuilder();
@@ -90,7 +102,7 @@ public sealed class OpenAiTranscriptionService
         content.Add(new StringContent("diarized_json"), "response_format");
         content.Add(new StringContent("auto"), "chunking_strategy");
         using var fileContent = new StreamContent(stream);
-        fileContent.Headers.ContentType = new MediaTypeHeaderValue("audio/wav");
+        fileContent.Headers.ContentType = new MediaTypeHeaderValue(ContentTypeFor(audioPath));
         content.Add(fileContent, "file", Path.GetFileName(audioPath));
         request.Content = content;
 
@@ -191,8 +203,7 @@ public sealed class OpenAiTranscriptionService
         Directory.CreateDirectory(directory);
         using var reader = new WaveFileReader(audioPath);
         var blockAlign = Math.Max(1, reader.WaveFormat.BlockAlign);
-        var maxDurationBytes = (long)Math.Floor(reader.WaveFormat.AverageBytesPerSecond * MaxChunkDuration.TotalSeconds);
-        var maxDataBytes = Math.Min(MaxUploadBytes - 4096, maxDurationBytes);
+        var maxDataBytes = MaxUploadBytes - 4096;
         maxDataBytes -= maxDataBytes % blockAlign;
         var bufferSize = (int)Math.Min(maxDataBytes, 1024 * 1024);
         bufferSize -= bufferSize % blockAlign;
@@ -237,16 +248,104 @@ public sealed class OpenAiTranscriptionService
         return chunks;
     }
 
-    private static bool ShouldChunk(string audioPath)
+    private static bool CanUploadSingleFile(string audioPath)
     {
-        var info = new FileInfo(audioPath);
-        if (info.Length > MaxUploadBytes)
+        return new FileInfo(audioPath).Length <= MaxUploadBytes;
+    }
+
+    private static string? TryCreateCompressedUploadCopy(string audioPath, string directory)
+    {
+        Directory.CreateDirectory(directory);
+        var duration = AudioDuration(audioPath);
+        if (duration <= TimeSpan.Zero)
         {
-            return true;
+            return null;
         }
 
+        var bitRates = CandidateBitRates(duration);
+        foreach (var bitRate in bitRates)
+        {
+            foreach (var encoder in new[] { CompressedEncoder.Mp3, CompressedEncoder.Aac })
+            {
+                var extension = encoder == CompressedEncoder.Mp3 ? ".mp3" : ".m4a";
+                var path = Path.Combine(directory, $"upload-{bitRate}-{encoder.ToString().ToLowerInvariant()}{extension}");
+                try
+                {
+                    EncodeCompressed(audioPath, path, bitRate, encoder);
+                    if (File.Exists(path) && new FileInfo(path).Length <= MaxUploadBytes)
+                    {
+                        return path;
+                    }
+                }
+                catch
+                {
+                    TryDeleteFile(path);
+                }
+            }
+        }
+
+        return null;
+    }
+
+    private static IReadOnlyList<int> CandidateBitRates(TimeSpan duration)
+    {
+        var maxBytes = Math.Max(1, MaxUploadBytes - UploadSafetyBytes);
+        var highestBitRateThatFits = (int)Math.Floor(maxBytes * 8.0 / Math.Max(1, duration.TotalSeconds));
+        var preferred = Math.Clamp(highestBitRateThatFits, MinimumSpeechBitRate, MaximumSpeechBitRate);
+        return new[] { preferred, 32000, 24000, 16000, 12000, 8000 }
+            .Where(bitRate => bitRate <= highestBitRateThatFits || bitRate == preferred)
+            .Where(bitRate => bitRate >= MinimumSpeechBitRate)
+            .Distinct()
+            .OrderByDescending(bitRate => bitRate)
+            .ToList();
+    }
+
+    private static void EncodeCompressed(string inputPath, string outputPath, int bitRate, CompressedEncoder encoder)
+    {
+        Directory.CreateDirectory(Path.GetDirectoryName(outputPath)!);
+        using var reader = new WaveFileReader(inputPath);
+        MediaFoundationApi.Startup();
+        if (encoder == CompressedEncoder.Mp3)
+        {
+            MediaFoundationEncoder.EncodeToMp3(reader, outputPath, bitRate);
+            return;
+        }
+
+        MediaFoundationEncoder.EncodeToAac(reader, outputPath, bitRate);
+    }
+
+    private static TimeSpan AudioDuration(string audioPath)
+    {
         using var reader = new WaveFileReader(audioPath);
-        return reader.TotalTime > MaxChunkDuration;
+        return reader.TotalTime;
+    }
+
+    private static string ContentTypeFor(string path)
+    {
+        return Path.GetExtension(path).ToLowerInvariant() switch
+        {
+            ".mp3" => "audio/mpeg",
+            ".m4a" => "audio/mp4",
+            ".mp4" => "audio/mp4",
+            ".ogg" => "audio/ogg",
+            ".webm" => "audio/webm",
+            _ => "audio/wav"
+        };
+    }
+
+    private static void TryDeleteFile(string path)
+    {
+        try
+        {
+            if (File.Exists(path))
+            {
+                File.Delete(path);
+            }
+        }
+        catch
+        {
+            // Temporary upload cleanup should not hide the underlying transcription path.
+        }
     }
 
     private static void TryDeleteDirectory(string directory)
@@ -269,6 +368,12 @@ public sealed class OpenAiTranscriptionService
     private sealed record DiarizedSegment(TimeSpan Start, TimeSpan End, string Speaker, string Text);
 
     private sealed record UploadChunk(int Index, string Path, TimeSpan Offset);
+
+    private enum CompressedEncoder
+    {
+        Mp3,
+        Aac
+    }
 
     private sealed class SpeakerLabeler
     {
