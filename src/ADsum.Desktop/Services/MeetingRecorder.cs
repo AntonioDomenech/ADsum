@@ -8,6 +8,7 @@ namespace ADsum.Desktop.Services;
 public sealed class MeetingRecorder : IDisposable
 {
     private const int MixedSampleRate = 16000;
+    private static readonly TimeSpan TimelineGapTolerance = TimeSpan.FromMilliseconds(40);
     private readonly AudioDeviceService _devices = new();
     private readonly object _micLock = new();
     private readonly object _systemLock = new();
@@ -18,6 +19,8 @@ public sealed class MeetingRecorder : IDisposable
     private DateTimeOffset _startedAt;
     private string _sessionName = "";
     private string _sessionDirectory = "";
+    private long _microphoneTimelineBytes;
+    private long _systemTimelineBytes;
 
     public bool IsRecording { get; private set; }
 
@@ -56,6 +59,8 @@ public sealed class MeetingRecorder : IDisposable
         _systemCapture.RecordingStopped += CaptureStopped;
 
         _startedAt = DateTimeOffset.Now;
+        _microphoneTimelineBytes = 0;
+        _systemTimelineBytes = 0;
         MicrophoneLevel = 0;
         SystemLevel = 0;
         IsRecording = true;
@@ -108,13 +113,30 @@ public sealed class MeetingRecorder : IDisposable
         return LastResult;
     }
 
-    public async Task<RecordingResult> RunDeviceTestAsync(string name, string microphoneId, string outputId, TimeSpan duration)
+    public async Task<RecordingResult> RunDeviceTestAsync(string name, string microphoneId, string outputId, TimeSpan duration, TimeSpan? toneDelay = null)
     {
         Start(string.IsNullOrWhiteSpace(name) ? "Device test" : name, microphoneId, outputId);
-        using var tone = PlayTestTone(outputId);
-        await Task.Delay(duration);
-        tone?.Dispose();
-        return Stop();
+        IDisposable? tone = null;
+        try
+        {
+            var delay = toneDelay.GetValueOrDefault();
+            if (delay > TimeSpan.Zero)
+            {
+                await Task.Delay(delay < duration ? delay : duration);
+            }
+
+            if (delay < duration)
+            {
+                tone = PlayTestTone(outputId);
+                await Task.Delay(duration - delay);
+            }
+
+            return Stop();
+        }
+        finally
+        {
+            tone?.Dispose();
+        }
     }
 
     public void Dispose()
@@ -131,7 +153,10 @@ public sealed class MeetingRecorder : IDisposable
         MicrophoneLevel = CalculateRms(e.Buffer, e.BytesRecorded, _microphoneCapture?.WaveFormat);
         lock (_micLock)
         {
-            _microphoneWriter?.Write(e.Buffer, 0, e.BytesRecorded);
+            if (_microphoneWriter is not null && _microphoneCapture?.WaveFormat is not null)
+            {
+                WriteTimelineAligned(_microphoneWriter, _microphoneCapture.WaveFormat, e.Buffer, e.BytesRecorded, ref _microphoneTimelineBytes);
+            }
             _microphoneWriter?.Flush();
         }
     }
@@ -141,7 +166,10 @@ public sealed class MeetingRecorder : IDisposable
         SystemLevel = CalculateRms(e.Buffer, e.BytesRecorded, _systemCapture?.WaveFormat);
         lock (_systemLock)
         {
-            _systemWriter?.Write(e.Buffer, 0, e.BytesRecorded);
+            if (_systemWriter is not null && _systemCapture?.WaveFormat is not null)
+            {
+                WriteTimelineAligned(_systemWriter, _systemCapture.WaveFormat, e.Buffer, e.BytesRecorded, ref _systemTimelineBytes);
+            }
             _systemWriter?.Flush();
         }
     }
@@ -278,6 +306,58 @@ public sealed class MeetingRecorder : IDisposable
         }
 
         return samples == 0 ? 0 : (float)Math.Sqrt(sum / samples);
+    }
+
+    private void WriteTimelineAligned(WaveFileWriter writer, WaveFormat format, byte[] buffer, int bytesRecorded, ref long timelineBytes)
+    {
+        var chunkStartBytes = EstimateChunkStartBytes(format, bytesRecorded);
+        var gapBytes = chunkStartBytes - timelineBytes;
+        var toleranceBytes = DurationToAlignedBytes(TimelineGapTolerance, format);
+        if (gapBytes > toleranceBytes)
+        {
+            WriteSilence(writer, AlignBytes(gapBytes, format.BlockAlign));
+            timelineBytes += AlignBytes(gapBytes, format.BlockAlign);
+        }
+
+        writer.Write(buffer, 0, bytesRecorded);
+        timelineBytes += bytesRecorded;
+    }
+
+    private long EstimateChunkStartBytes(WaveFormat format, int bytesRecorded)
+    {
+        var averageBytesPerSecond = Math.Max(1, format.AverageBytesPerSecond);
+        var chunkDuration = TimeSpan.FromSeconds((double)bytesRecorded / averageBytesPerSecond);
+        var chunkStart = DateTimeOffset.Now - _startedAt - chunkDuration;
+        if (chunkStart < TimeSpan.Zero)
+        {
+            chunkStart = TimeSpan.Zero;
+        }
+        return DurationToAlignedBytes(chunkStart, format);
+    }
+
+    private static long DurationToAlignedBytes(TimeSpan duration, WaveFormat format)
+    {
+        var averageBytesPerSecond = Math.Max(1, format.AverageBytesPerSecond);
+        return AlignBytes((long)Math.Round(duration.TotalSeconds * averageBytesPerSecond), format.BlockAlign);
+    }
+
+    private static long AlignBytes(long bytes, int blockAlign)
+    {
+        var alignment = Math.Max(1, blockAlign);
+        return bytes - (bytes % alignment);
+    }
+
+    private static void WriteSilence(WaveFileWriter writer, long bytes)
+    {
+        var blockAlign = Math.Max(1, writer.WaveFormat.BlockAlign);
+        var bufferLength = AlignBytes(8192, blockAlign);
+        var silence = new byte[Math.Max(blockAlign, bufferLength)];
+        while (bytes > 0)
+        {
+            var count = (int)Math.Min(silence.Length, bytes);
+            writer.Write(silence, 0, count);
+            bytes -= count;
+        }
     }
 
     public static void MixWaveFiles(IReadOnlyList<string> paths, string outputPath)

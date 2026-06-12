@@ -32,6 +32,7 @@ public partial class App : Application
         try
         {
             var duration = double.TryParse(ArgValue(args, "--duration"), out var value) ? value : 4.0;
+            var toneDelay = double.TryParse(ArgValue(args, "--tone-delay"), out var delay) ? delay : 0.0;
             var micContains = ArgValue(args, "--mic-contains");
             var outputContains = ArgValue(args, "--output-contains");
 
@@ -43,7 +44,8 @@ public partial class App : Application
                 "Smoke test",
                 microphone.Id,
                 output.Id,
-                TimeSpan.FromSeconds(duration));
+                TimeSpan.FromSeconds(duration),
+                TimeSpan.FromSeconds(Math.Max(0, toneDelay)));
 
             var payload = new
             {

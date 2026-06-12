@@ -18,6 +18,8 @@ dotnet run --project .\src\ADsum.Desktop\ADsum.Desktop.csproj
 
 The .NET build script creates `dist\ADsum-windows-dotnet.zip`, a self-contained Windows bundle that can be attached to a GitHub Release. People downloading that ZIP do not need to install the .NET runtime.
 
+Recordings are saved under `%LOCALAPPDATA%\ADsum\Recordings\<timestamp-session-name>`. The app also shows the exact folder in the **Last Recording** panel after every recording.
+
 ## Manual recording test
 
 1. Open Windows sound settings and set the headset you want to hear through as the current output.
