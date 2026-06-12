@@ -28,6 +28,8 @@ Each meeting folder contains:
 - `transcription.md`
 - `meeting-minutes.md`
 
+Use the **Library** tab to browse previous meetings, preview saved minutes/transcripts, and open the recording or folder directly.
+
 ## Manual recording test
 
 1. Open Windows sound settings and set the headset you want to hear through as the current output.

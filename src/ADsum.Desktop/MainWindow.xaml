@@ -20,7 +20,9 @@
             </Border>
         </DockPanel>
 
-        <Grid Grid.Row="1">
+        <TabControl x:Name="MainTabs" Grid.Row="1" SelectionChanged="MainTabs_SelectionChanged">
+            <TabItem Header="Record">
+        <Grid Margin="0,8,0,0">
             <Grid.ColumnDefinitions>
                 <ColumnDefinition Width="350" />
                 <ColumnDefinition Width="18" />
@@ -151,5 +153,79 @@
                 </Border>
             </Grid>
         </Grid>
+            </TabItem>
+            <TabItem Header="Library">
+                <Grid Margin="0,8,0,0">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="390" />
+                        <ColumnDefinition Width="18" />
+                        <ColumnDefinition Width="*" />
+                    </Grid.ColumnDefinitions>
+
+                    <Border Grid.Column="0" Style="{StaticResource Panel}">
+                        <Grid>
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto" />
+                                <RowDefinition Height="14" />
+                                <RowDefinition Height="*" />
+                            </Grid.RowDefinitions>
+                            <DockPanel Grid.Row="0">
+                                <StackPanel DockPanel.Dock="Left">
+                                    <TextBlock Text="Previous Meetings" FontSize="18" FontWeight="Bold" />
+                                    <TextBlock x:Name="LibraryCountText" Text="No meetings loaded" Foreground="{StaticResource MutedBrush}" FontSize="12" Margin="0,4,0,0" />
+                                </StackPanel>
+                                <Button x:Name="LibraryRefreshButton" Content="Refresh" DockPanel.Dock="Right" MinWidth="96" Click="LibraryRefreshButton_Click" />
+                            </DockPanel>
+                            <ListBox x:Name="LibraryList" Grid.Row="2" SelectionChanged="LibraryList_SelectionChanged"
+                                     BorderBrush="{StaticResource LineBrush}" BorderThickness="1" ScrollViewer.VerticalScrollBarVisibility="Visible">
+                                <ListBox.ItemTemplate>
+                                    <DataTemplate>
+                                        <StackPanel Margin="4">
+                                            <TextBlock Text="{Binding DisplayName}" FontWeight="SemiBold" TextWrapping="Wrap" />
+                                            <TextBlock Text="{Binding FileSummary}" Foreground="{StaticResource MutedBrush}" FontSize="12" Margin="0,3,0,0" />
+                                        </StackPanel>
+                                    </DataTemplate>
+                                </ListBox.ItemTemplate>
+                            </ListBox>
+                        </Grid>
+                    </Border>
+
+                    <Border Grid.Column="2" Style="{StaticResource Panel}">
+                        <Grid>
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto" />
+                                <RowDefinition Height="Auto" />
+                                <RowDefinition Height="14" />
+                                <RowDefinition Height="*" />
+                            </Grid.RowDefinitions>
+
+                            <TextBlock x:Name="LibraryTitleText" Text="Select a meeting" FontSize="22" FontWeight="Bold" TextWrapping="Wrap" />
+                            <TextBlock x:Name="LibraryDetailsText" Grid.Row="1" Text="Saved recordings and notes will appear here." Foreground="{StaticResource MutedBrush}" TextWrapping="Wrap" Margin="0,8,0,0" />
+
+                            <DockPanel Grid.Row="3">
+                                <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Margin="0,0,0,14">
+                                    <Button x:Name="LibraryOpenFolderButton" Content="Open folder" MinWidth="112" Margin="0,0,8,0" Click="LibraryOpenFolderButton_Click" IsEnabled="False" />
+                                    <Button x:Name="LibraryOpenRecordingButton" Content="Open recording" MinWidth="126" Margin="0,0,8,0" Click="LibraryOpenRecordingButton_Click" IsEnabled="False" />
+                                    <Button x:Name="LibraryOpenMinutesButton" Content="Open minutes" MinWidth="112" Margin="0,0,8,0" Click="LibraryOpenMinutesButton_Click" IsEnabled="False" />
+                                    <Button x:Name="LibraryOpenTranscriptButton" Content="Open transcript" MinWidth="126" Click="LibraryOpenTranscriptButton_Click" IsEnabled="False" />
+                                </StackPanel>
+                                <TabControl>
+                                    <TabItem Header="Minutes">
+                                        <TextBox x:Name="LibraryMinutesBox" Text="Select a meeting with minutes." TextWrapping="Wrap"
+                                                 AcceptsReturn="True" IsReadOnly="True" VerticalScrollBarVisibility="Visible" HorizontalScrollBarVisibility="Disabled"
+                                                 BorderThickness="0" Background="Transparent" FontSize="14" Padding="8" />
+                                    </TabItem>
+                                    <TabItem Header="Transcript">
+                                        <TextBox x:Name="LibraryTranscriptBox" Text="Select a meeting with a transcript." TextWrapping="Wrap"
+                                                 AcceptsReturn="True" IsReadOnly="True" VerticalScrollBarVisibility="Visible" HorizontalScrollBarVisibility="Disabled"
+                                                 BorderThickness="0" Background="Transparent" FontSize="14" Padding="8" />
+                                    </TabItem>
+                                </TabControl>
+                            </DockPanel>
+                        </Grid>
+                    </Border>
+                </Grid>
+            </TabItem>
+        </TabControl>
     </Grid>
 </Window>

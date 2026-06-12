@@ -30,11 +30,14 @@ Each meeting is stored under `%LOCALAPPDATA%\ADsum\Recordings` in a folder named
 - `transcription.md`
 - `meeting-minutes.md`
 
+The desktop app also includes a **Library** tab for browsing previous meetings, previewing saved minutes/transcripts, and opening the recording or folder directly.
+
 ## Features
 
 - Dual-channel capture architecture with pluggable audio backends.
 - Windows desktop UI with microphone plus WASAPI loopback recording.
 - Streaming-friendly recording pipeline that writes directly to disk.
+- In-app meeting library for reviewing previous recordings, transcripts, and minutes.
 - Storage layer backed by SQLite for recording metadata, transcripts, and notes.
 - Speaker-aware transcription services with OpenAI integration and a lightweight dummy fallback for offline tests.
 - OpenAI meeting-minutes generation for summaries, discussion points, next steps, and decisions.

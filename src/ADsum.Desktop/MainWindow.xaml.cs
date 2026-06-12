@@ -14,6 +14,7 @@ public partial class MainWindow : Window
     private readonly MeetingRecorder _recorder = new();
     private readonly OpenAiTranscriptionService _transcription = new();
     private readonly OpenAiMeetingMinutesService _minutes = new();
+    private readonly MeetingLibraryService _library = new();
     private readonly DispatcherTimer _timer;
     private RecordingResult? _lastResult;
     private bool _isBusy;
@@ -33,6 +34,7 @@ public partial class MainWindow : Window
         SessionNameBox.Text = "";
         KeyStateText.Text = _settings.HasOpenAiKey ? "OpenAI key configured" : "OpenAI key not configured";
         RefreshDevices();
+        RefreshLibrary();
     }
 
     private void RefreshDevices()
@@ -101,6 +103,7 @@ public partial class MainWindow : Window
             SystemLevelBar.Value = 0;
             ElapsedText.Text = "00:00";
             RenderResult(_lastResult);
+            RefreshLibrary(_lastResult.SessionDirectory);
         }
         catch (Exception ex)
         {
@@ -132,6 +135,7 @@ public partial class MainWindow : Window
             _lastResult = MeetingArtifactStore.SaveMinutes(_lastResult, minutes);
             MinutesBox.Text = minutes.Trim();
             RenderResult(_lastResult);
+            RefreshLibrary(_lastResult.SessionDirectory);
             TranscriptStateText.Text = "Done";
         });
     }
@@ -151,6 +155,18 @@ public partial class MainWindow : Window
     }
 
     private void RefreshButton_Click(object sender, RoutedEventArgs e) => RefreshDevices();
+
+    private void LibraryRefreshButton_Click(object sender, RoutedEventArgs e) => RefreshLibrary();
+
+    private void MainTabs_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (ReferenceEquals(e.Source, MainTabs) && MainTabs.SelectedIndex == 1)
+        {
+            RefreshLibrary(SelectedLibraryMeeting()?.DirectoryPath);
+        }
+    }
+
+    private void LibraryList_SelectionChanged(object sender, SelectionChangedEventArgs e) => RenderLibrarySelection(SelectedLibraryMeeting());
 
     private void OpenFolderButton_Click(object sender, RoutedEventArgs e)
     {
@@ -183,6 +199,42 @@ public partial class MainWindow : Window
         if (_lastResult?.TranscriptPath is not null && File.Exists(_lastResult.TranscriptPath))
         {
             OpenPath(_lastResult.TranscriptPath);
+        }
+    }
+
+    private void LibraryOpenFolderButton_Click(object sender, RoutedEventArgs e)
+    {
+        var item = SelectedLibraryMeeting();
+        if (item is not null && Directory.Exists(item.DirectoryPath))
+        {
+            OpenPath(item.DirectoryPath);
+        }
+    }
+
+    private void LibraryOpenRecordingButton_Click(object sender, RoutedEventArgs e)
+    {
+        var item = SelectedLibraryMeeting();
+        if (item?.RecordingPath is not null && File.Exists(item.RecordingPath))
+        {
+            OpenPath(item.RecordingPath);
+        }
+    }
+
+    private void LibraryOpenMinutesButton_Click(object sender, RoutedEventArgs e)
+    {
+        var item = SelectedLibraryMeeting();
+        if (item?.MinutesPath is not null && File.Exists(item.MinutesPath))
+        {
+            OpenPath(item.MinutesPath);
+        }
+    }
+
+    private void LibraryOpenTranscriptButton_Click(object sender, RoutedEventArgs e)
+    {
+        var item = SelectedLibraryMeeting();
+        if (item?.TranscriptPath is not null && File.Exists(item.TranscriptPath))
+        {
+            OpenPath(item.TranscriptPath);
         }
     }
 
@@ -284,6 +336,87 @@ public partial class MainWindow : Window
         TranscriptStateText.Text = "Ready";
         TranscriptBox.Text = "Record audio, then create notes.";
         MinutesBox.Text = "Record audio, then create notes.";
+    }
+
+    private void RefreshLibrary(string? preferredDirectory = null)
+    {
+        var selectedDirectory = preferredDirectory ?? SelectedLibraryMeeting()?.DirectoryPath;
+        var meetings = _library.GetMeetings();
+        LibraryList.ItemsSource = meetings;
+        LibraryCountText.Text = meetings.Count == 1 ? "1 meeting" : $"{meetings.Count} meetings";
+
+        var selected = !string.IsNullOrWhiteSpace(selectedDirectory)
+            ? meetings.FirstOrDefault(item => SamePath(item.DirectoryPath, selectedDirectory))
+            : null;
+        selected ??= meetings.FirstOrDefault();
+        LibraryList.SelectedItem = selected;
+        RenderLibrarySelection(selected);
+    }
+
+    private void RenderLibrarySelection(MeetingLibraryItem? item)
+    {
+        if (item is null)
+        {
+            LibraryTitleText.Text = "No meetings found";
+            LibraryDetailsText.Text = $"ADsum will list saved meetings from {_library.RootDirectory}.";
+            LibraryMinutesBox.Text = "No meeting selected.";
+            LibraryTranscriptBox.Text = "No meeting selected.";
+            SetLibraryButtons(false, false, false, false);
+            return;
+        }
+
+        LibraryTitleText.Text = item.Topic;
+        LibraryDetailsText.Text =
+            $"{item.DateText}\n" +
+            $"{item.FileSummary}\n" +
+            $"{item.DirectoryPath}";
+        LibraryMinutesBox.Text = ReadTextPreview(item.MinutesPath, "No meeting minutes saved for this meeting.");
+        LibraryTranscriptBox.Text = ReadTextPreview(item.TranscriptPath, "No transcript saved for this meeting.");
+        SetLibraryButtons(
+            Directory.Exists(item.DirectoryPath),
+            item.RecordingPath is not null && File.Exists(item.RecordingPath),
+            item.MinutesPath is not null && File.Exists(item.MinutesPath),
+            item.TranscriptPath is not null && File.Exists(item.TranscriptPath));
+    }
+
+    private MeetingLibraryItem? SelectedLibraryMeeting() => (MeetingLibraryItem?)LibraryList.SelectedItem;
+
+    private void SetLibraryButtons(bool folder, bool recording, bool minutes, bool transcript)
+    {
+        LibraryOpenFolderButton.IsEnabled = folder;
+        LibraryOpenRecordingButton.IsEnabled = recording;
+        LibraryOpenMinutesButton.IsEnabled = minutes;
+        LibraryOpenTranscriptButton.IsEnabled = transcript;
+    }
+
+    private static string ReadTextPreview(string? path, string missingText)
+    {
+        if (string.IsNullOrWhiteSpace(path) || !File.Exists(path))
+        {
+            return missingText;
+        }
+
+        try
+        {
+            return File.ReadAllText(path);
+        }
+        catch (Exception ex)
+        {
+            return $"Unable to read file: {ex.Message}";
+        }
+    }
+
+    private static bool SamePath(string? first, string? second)
+    {
+        if (string.IsNullOrWhiteSpace(first) || string.IsNullOrWhiteSpace(second))
+        {
+            return false;
+        }
+
+        return string.Equals(
+            Path.GetFullPath(first).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar),
+            Path.GetFullPath(second).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar),
+            StringComparison.OrdinalIgnoreCase);
     }
 
     private static void OpenPath(string path)
