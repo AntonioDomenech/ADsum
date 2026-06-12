@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, Optional
 
 from pydantic import Field, ValidationError
+from pydantic_core import PydanticUndefined
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -74,7 +75,7 @@ def _env_key(field: str) -> str:
 
 
 def _field_default(field_info) -> Any:
-    if field_info.default is not None:
+    if field_info.default is not PydanticUndefined:
         return field_info.default
     if field_info.default_factory is not None:  # type: ignore[truthy-function]
         return field_info.default_factory()

@@ -231,6 +231,8 @@ class OpenAITranscriptionService(TranscriptionService):
 
 
     def _candidate_response_formats(self) -> List[str]:
+        if self.model in {"gpt-4o-transcribe", "gpt-4o-mini-transcribe"}:
+            return ["json", "text"]
         return ["verbose_json", "json", "text"]
 
     def _transcribe_path(self, audio_path: Path) -> tuple[str, List[TranscriptSegment], Optional[Dict[str, Any]]]:

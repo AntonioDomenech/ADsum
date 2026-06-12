@@ -34,7 +34,13 @@ from ..config import (
 )
 from ..data.models import NoteDocument, TranscriptResult
 from ..core.audio.base import AudioCapture
-from ..core.audio.devices import DeviceInfo, FFmpegDevice, list_input_devices
+from ..core.audio.devices import (
+    DeviceInfo,
+    FFmpegDevice,
+    FFmpegDeviceEnumerationError,
+    format_device_table,
+    list_input_devices,
+)
 from ..core.audio.factory import (
     CaptureConfigurationError,
     CaptureRequest,
@@ -1360,6 +1366,14 @@ class RecordingWindowUI:
         return normalize_device_value(value)
 
     def _auto_detect_working_devices(self) -> Tuple[List[DeviceInfo], str]:
+        backend = (getattr(self._settings, "audio_backend", "") or "").strip().lower()
+        if backend == "ffmpeg":
+            self._info("FFmpeg audio backend active; skipping automatic device probing.")
+            try:
+                return [], format_device_table()
+            except (FFmpegBinaryNotFoundError, FFmpegDeviceEnumerationError):
+                return [], render_device_table(self._settings)
+
         return auto_detect_working_devices(
             self._settings,
             sample_rate=self.sample_rate,

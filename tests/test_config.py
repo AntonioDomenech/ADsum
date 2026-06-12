@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from pathlib import Path
 
 import pytest
 
@@ -32,6 +33,13 @@ def test_list_environment_settings_reflects_defaults():
     assert "ADSUM_OPENAI_NOTES_MODEL" in env_names
     assert "ADSUM_DEFAULT_MIC_DEVICE" in env_names
     assert "ADSUM_DEFAULT_SYSTEM_DEVICE" in env_names
+
+
+def test_list_environment_settings_resolves_default_factories():
+    entries = {entry.field: entry for entry in config.list_environment_settings()}
+
+    assert entries["base_dir"].default == Path("recordings")
+    assert entries["database_path"].default == Path("adsum.db")
 
 
 def test_update_environment_setting_persists_and_reloads():

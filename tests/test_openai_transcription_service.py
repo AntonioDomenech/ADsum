@@ -60,6 +60,13 @@ def test_transcribe_falls_back_to_text(tmp_path):
     assert result.raw_response == {"text": "Mock transcript from text response"}
 
 
+def test_transcribe_model_prefers_supported_response_formats():
+    service, _ = _make_service()
+    service.model = "gpt-4o-mini-transcribe"
+
+    assert service._candidate_response_formats() == ["json", "text"]
+
+
 def test_transcribe_large_file_chunking(monkeypatch, tmp_path):
     service, _ = _make_service()
 
