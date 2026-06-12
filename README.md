@@ -24,7 +24,7 @@ Build a Windows release artifact:
 
 The build creates `dist\ADsum-windows-dotnet.zip`, a self-contained Windows bundle that can be attached to a GitHub Release. People downloading that ZIP do not need to install the .NET runtime. See `docs/v2-windows-desktop.md` for the manual audio test checklist.
 
-Each meeting is stored under `%LOCALAPPDATA%\ADsum\Recordings` in a folder named `yyyyMMdd-HHmm-topic`. The folder contains:
+Each meeting is stored under `%LOCALAPPDATA%\ADsum\Recordings` in a folder named `yyyyMMdd-HHmm-topic`. The final `recording.wav` is mixed from microphone and system audio with bounded level balancing so quieter room speech is less likely to be masked by louder computer audio. The folder contains:
 
 - `recording.wav`
 - `transcription.md`

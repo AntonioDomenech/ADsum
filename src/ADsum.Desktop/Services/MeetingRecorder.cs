@@ -8,6 +8,14 @@ namespace ADsum.Desktop.Services;
 public sealed class MeetingRecorder : IDisposable
 {
     private const int MixedSampleRate = 16000;
+    private const float TargetActiveRms = 0.12f;
+    private const float MinimumActiveRms = 0.002f;
+    private const float MinimumPeakForGain = 0.004f;
+    private const float ActiveThresholdFloor = 0.003f;
+    private const float ActivePeakFraction = 0.08f;
+    private const float MinimumTrackGain = 0.5f;
+    private const float MaximumTrackGain = 10.0f;
+    private const float MaximumNormalizedPeak = 0.95f;
     private static readonly TimeSpan TimelineGapTolerance = TimeSpan.FromMilliseconds(40);
     private readonly AudioDeviceService _devices = new();
     private readonly object _micLock = new();
@@ -389,6 +397,7 @@ public sealed class MeetingRecorder : IDisposable
             .Select(ReadMonoSamples)
             .Where(track => track.Samples.Length > 0)
             .Select(track => Resample(track.Samples, track.SampleRate, MixedSampleRate))
+            .Select(NormalizeForSpeechMix)
             .ToList();
 
         if (tracks.Count == 0)
@@ -417,6 +426,54 @@ public sealed class MeetingRecorder : IDisposable
         }
 
         WritePcm16(outputPath, mixed, MixedSampleRate);
+    }
+
+    private static float[] NormalizeForSpeechMix(float[] samples)
+    {
+        var peak = samples.Select(Math.Abs).DefaultIfEmpty(0).Max();
+        if (peak < MinimumPeakForGain)
+        {
+            return samples;
+        }
+
+        var activeThreshold = Math.Max(ActiveThresholdFloor, peak * ActivePeakFraction);
+        double activeSum = 0;
+        var activeSamples = 0;
+        foreach (var sample in samples)
+        {
+            if (Math.Abs(sample) < activeThreshold)
+            {
+                continue;
+            }
+
+            activeSum += sample * sample;
+            activeSamples++;
+        }
+
+        if (activeSamples == 0)
+        {
+            return samples;
+        }
+
+        var activeRms = (float)Math.Sqrt(activeSum / activeSamples);
+        if (activeRms < MinimumActiveRms)
+        {
+            return samples;
+        }
+
+        var gain = Math.Clamp(TargetActiveRms / activeRms, MinimumTrackGain, MaximumTrackGain);
+        gain = Math.Min(gain, MaximumNormalizedPeak / peak);
+        if (Math.Abs(gain - 1.0f) < 0.01f)
+        {
+            return samples;
+        }
+
+        var normalized = new float[samples.Length];
+        for (var index = 0; index < samples.Length; index++)
+        {
+            normalized[index] = samples[index] * gain;
+        }
+        return normalized;
     }
 
     public static TrackMetrics MeasureWaveFile(string? path)

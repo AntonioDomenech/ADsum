@@ -20,7 +20,7 @@ dotnet run --project .\src\ADsum.Desktop\ADsum.Desktop.csproj
 
 The .NET build script creates `dist\ADsum-windows-dotnet.zip`, a self-contained Windows bundle that can be attached to a GitHub Release. People downloading that ZIP do not need to install the .NET runtime.
 
-Meetings are saved under `%LOCALAPPDATA%\ADsum\Recordings\<yyyyMMdd-HHmm-topic>`. The app also shows the exact folder in the **Last Recording** panel after every recording.
+Meetings are saved under `%LOCALAPPDATA%\ADsum\Recordings\<yyyyMMdd-HHmm-topic>`. The app also shows the exact folder in the **Last Recording** panel after every recording. The final `recording.wav` is mixed from microphone and system audio with bounded level balancing so quieter room speech is less likely to be masked by louder computer audio.
 
 Each meeting folder contains:
 
