@@ -2,9 +2,34 @@
 
 ADsum is a cross-platform meeting recorder designed to capture system audio and microphone streams simultaneously, transcribe the conversation, and generate actionable notes. The repository is organised following a modular architecture so the audio engine, orchestration pipeline, transcription backends, and note generators can evolve independently.
 
+## ADsum v2 desktop app
+
+ADsum v2 adds a Windows-first desktop experience with a local modern UI and native audio capture. It records the selected microphone and a WASAPI loopback stream from the selected output device at the same time, so you can capture your headset mic and the meeting audio you are hearing without taking exclusive control of playback.
+
+Run it from source:
+
+```bash
+adsum desktop
+```
+
+If the embedded desktop webview is unavailable:
+
+```bash
+adsum desktop --browser
+```
+
+Build a Windows release artifact:
+
+```powershell
+.\scripts\build_windows.ps1
+```
+
+The build creates `dist\ADsum-windows.zip`, which can be attached to a GitHub Release. See `docs/v2-windows-desktop.md` for the manual audio test checklist.
+
 ## Features
 
 - Dual-channel capture architecture with pluggable audio backends.
+- Windows desktop UI with microphone plus WASAPI loopback recording.
 - Streaming-friendly recording pipeline that writes directly to disk.
 - Storage layer backed by SQLite for recording metadata, transcripts, and notes.
 - Transcription services with OpenAI integration and a lightweight dummy fallback for offline tests.

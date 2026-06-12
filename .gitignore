@@ -13,6 +13,7 @@ __pycache__/
 .vscode/
 build/
 dist/
+*.spec
 site/
 adsum.egg-info/
 recordings/

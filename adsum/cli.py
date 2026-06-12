@@ -237,6 +237,18 @@ def devices() -> None:
 
 
 @app.command()
+def desktop(
+    port: int = typer.Option(0, help="Local server port. Use 0 to pick a free port."),
+    browser: bool = typer.Option(False, "--browser", help="Open in the default browser instead of a desktop webview."),
+) -> None:
+    """Launch the ADsum v2 Windows desktop experience."""
+
+    from .desktop import run_desktop_app
+
+    run_desktop_app(port=port, browser=browser)
+
+
+@app.command()
 @with_common_ui_options
 def ui(
     *,
