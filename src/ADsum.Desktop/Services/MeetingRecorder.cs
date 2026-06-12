@@ -17,6 +17,7 @@ public sealed class MeetingRecorder : IDisposable
     private WaveFileWriter? _microphoneWriter;
     private WaveFileWriter? _systemWriter;
     private DateTimeOffset _startedAt;
+    private DateTime _startedLocalTime;
     private string _sessionName = "";
     private string _sessionDirectory = "";
     private long _microphoneTimelineBytes;
@@ -39,8 +40,9 @@ public sealed class MeetingRecorder : IDisposable
             throw new InvalidOperationException("A recording is already active.");
         }
 
-        _sessionName = string.IsNullOrWhiteSpace(name) ? $"Meeting {DateTime.Now:yyyy-MM-dd HH.mm}" : name.Trim();
-        _sessionDirectory = CreateSessionDirectory(_sessionName);
+        _sessionName = string.IsNullOrWhiteSpace(name) ? "Untitled meeting" : name.Trim();
+        _startedLocalTime = DateTime.Now;
+        _sessionDirectory = CreateSessionDirectory(_sessionName, _startedLocalTime);
         Directory.CreateDirectory(_sessionDirectory);
 
         var microphone = _devices.GetMicrophone(microphoneId);
@@ -91,22 +93,30 @@ public sealed class MeetingRecorder : IDisposable
 
         var microphonePath = ExistingPath(Path.Combine(_sessionDirectory, "microphone.wav"));
         var systemPath = ExistingPath(Path.Combine(_sessionDirectory, "system.wav"));
-        var mixedPath = Path.Combine(_sessionDirectory, "mixed.wav");
+        var mixedPath = Path.Combine(_sessionDirectory, "recording.wav");
         MixWaveFiles(
             new[] { microphonePath, systemPath }.Where(path => path is not null).Cast<string>().ToArray(),
             mixedPath);
         var finalMixedPath = ExistingPath(mixedPath);
+        var microphoneMetrics = MeasureWaveFile(microphonePath);
+        var systemMetrics = MeasureWaveFile(systemPath);
+        var mixedMetrics = MeasureWaveFile(finalMixedPath);
+        TryDeleteFile(microphonePath);
+        TryDeleteFile(systemPath);
 
         LastResult = new RecordingResult(
             _sessionName,
             _sessionDirectory,
+            _startedLocalTime,
             duration,
-            microphonePath,
-            systemPath,
+            null,
+            null,
             finalMixedPath,
-            MeasureWaveFile(microphonePath),
-            MeasureWaveFile(systemPath),
-            MeasureWaveFile(finalMixedPath));
+            null,
+            null,
+            microphoneMetrics,
+            systemMetrics,
+            mixedMetrics);
 
         MicrophoneLevel = 0;
         SystemLevel = 0;
@@ -252,19 +262,16 @@ public sealed class MeetingRecorder : IDisposable
         }
     }
 
-    private static string CreateSessionDirectory(string name)
+    private static string CreateSessionDirectory(string name, DateTime startedAt)
     {
         var root = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "ADsum", "Recordings");
-        var stamp = DateTime.Now.ToString("yyyyMMdd-HHmmss");
-        var slug = string.Join("-", name.Split(Path.GetInvalidFileNameChars(), StringSplitOptions.RemoveEmptyEntries))
-            .Trim()
-            .Replace(" ", "-")
-            .ToLowerInvariant();
+        var stamp = startedAt.ToString("yyyyMMdd-HHmm");
+        var slug = MeetingArtifactStore.Slugify(name);
         if (string.IsNullOrWhiteSpace(slug))
         {
-            slug = "session";
+            slug = "untitled-meeting";
         }
-        return Path.Combine(root, $"{stamp}-{slug}");
+        return MeetingArtifactStore.UniqueDirectory(root, $"{stamp}-{slug}");
     }
 
     private static string? ExistingPath(string path)
@@ -275,6 +282,21 @@ public sealed class MeetingRecorder : IDisposable
         }
         var info = new FileInfo(path);
         return info.Length > 44 ? path : null;
+    }
+
+    private static void TryDeleteFile(string? path)
+    {
+        try
+        {
+            if (!string.IsNullOrWhiteSpace(path) && File.Exists(path))
+            {
+                File.Delete(path);
+            }
+        }
+        catch
+        {
+            // Temporary channel files are best-effort cleanup after the mixed recording is written.
+        }
     }
 
     private static float CalculateRms(byte[] buffer, int bytesRecorded, WaveFormat? format)

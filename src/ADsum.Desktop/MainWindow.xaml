@@ -1,7 +1,7 @@
 <Window x:Class="ADsum.Desktop.MainWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="ADsum" Height="820" Width="1180" MinHeight="680" MinWidth="980"
+        Title="ADsum" Height="860" Width="1180" MinHeight="720" MinWidth="980"
         Background="{StaticResource AppBackgroundBrush}">
     <Grid Margin="24">
         <Grid.RowDefinitions>
@@ -29,7 +29,7 @@
 
             <Border Grid.Column="0" Style="{StaticResource Panel}">
                 <StackPanel>
-                    <TextBlock Text="Session" Foreground="{StaticResource MutedBrush}" FontWeight="SemiBold" />
+                    <TextBlock Text="Meeting topic" Foreground="{StaticResource MutedBrush}" FontWeight="SemiBold" />
                     <TextBox x:Name="SessionNameBox" Margin="0,7,0,18" MinHeight="38" Padding="8" />
 
                     <TextBlock Text="Microphone" Foreground="{StaticResource MutedBrush}" FontWeight="SemiBold" />
@@ -111,7 +111,10 @@
                     <DockPanel>
                         <DockPanel DockPanel.Dock="Top" Margin="0,0,0,14">
                             <TextBlock Text="Last Recording" FontSize="18" FontWeight="Bold" DockPanel.Dock="Left" />
-                            <Button x:Name="TranscribeButton" Content="Transcribe speakers" DockPanel.Dock="Right" MinWidth="148" Click="TranscribeButton_Click" IsEnabled="False" />
+                            <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
+                                <Button x:Name="OpenFolderButton" Content="Open folder" MinWidth="112" Margin="0,0,8,0" Click="OpenFolderButton_Click" IsEnabled="False" />
+                                <Button x:Name="TranscribeButton" Content="Create notes" MinWidth="118" Click="TranscribeButton_Click" IsEnabled="False" />
+                            </StackPanel>
                         </DockPanel>
                         <TextBlock x:Name="ResultText" Text="No recording yet." Foreground="{StaticResource MutedBrush}" TextWrapping="Wrap" />
                     </DockPanel>
@@ -120,12 +123,21 @@
                 <Border Grid.Row="4" Style="{StaticResource Panel}">
                     <DockPanel>
                         <DockPanel DockPanel.Dock="Top" Margin="0,0,0,14">
-                            <TextBlock Text="Speaker Transcript" FontSize="18" FontWeight="Bold" DockPanel.Dock="Left" />
+                            <TextBlock Text="Review Notes" FontSize="18" FontWeight="Bold" DockPanel.Dock="Left" />
                             <TextBlock x:Name="TranscriptStateText" Text="Ready" Foreground="{StaticResource MutedBrush}" FontWeight="SemiBold" DockPanel.Dock="Right" />
                         </DockPanel>
-                        <TextBox x:Name="TranscriptBox" Text="Record audio, then transcribe speakers." TextWrapping="Wrap"
-                                 AcceptsReturn="True" IsReadOnly="True" VerticalScrollBarVisibility="Auto" BorderThickness="0"
-                                 Background="Transparent" FontSize="14" />
+                        <TabControl>
+                            <TabItem Header="Minutes">
+                                <TextBox x:Name="MinutesBox" Text="Record audio, then create notes." TextWrapping="Wrap"
+                                         AcceptsReturn="True" IsReadOnly="True" VerticalScrollBarVisibility="Auto" BorderThickness="0"
+                                         Background="Transparent" FontSize="14" Padding="8" />
+                            </TabItem>
+                            <TabItem Header="Transcript">
+                                <TextBox x:Name="TranscriptBox" Text="Record audio, then create notes." TextWrapping="Wrap"
+                                         AcceptsReturn="True" IsReadOnly="True" VerticalScrollBarVisibility="Auto" BorderThickness="0"
+                                         Background="Transparent" FontSize="14" Padding="8" />
+                            </TabItem>
+                        </TabControl>
                     </DockPanel>
                 </Border>
             </Grid>

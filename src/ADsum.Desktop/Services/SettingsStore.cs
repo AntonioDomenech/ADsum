@@ -18,7 +18,9 @@ public sealed class SettingsStore
         _settings = Load();
     }
 
-    public string? OpenAiKey => Unprotect(_settings.OpenAiKey) ?? FindOpenAiKey();
+    public string? OpenAiKey => Unprotect(_settings.OpenAiKey) ?? FindSetting("ADSUM_OPENAI_API_KEY", "OPENAI_API_KEY");
+
+    public string NotesModel => FindSetting("ADSUM_OPENAI_NOTES_MODEL", "ADSUM_OPENAI_MINUTES_MODEL") ?? "gpt-5.5";
 
     public bool HasOpenAiKey => !string.IsNullOrWhiteSpace(OpenAiKey);
 
@@ -74,21 +76,26 @@ public sealed class SettingsStore
         }
     }
 
-    private static string? FindOpenAiKey()
+    private static string? FindSetting(params string[] names)
     {
-        var key = NonEmpty(Environment.GetEnvironmentVariable("ADSUM_OPENAI_API_KEY"))
-            ?? NonEmpty(Environment.GetEnvironmentVariable("OPENAI_API_KEY"));
-        if (key is not null)
+        foreach (var name in names)
         {
-            return key;
+            var value = NonEmpty(Environment.GetEnvironmentVariable(name));
+            if (value is not null)
+            {
+                return value;
+            }
         }
 
         foreach (var path in DotEnvCandidates())
         {
-            key = ReadDotEnvValue(path, "ADSUM_OPENAI_API_KEY") ?? ReadDotEnvValue(path, "OPENAI_API_KEY");
-            if (key is not null)
+            foreach (var name in names)
             {
-                return key;
+                var value = ReadDotEnvValue(path, name);
+                if (value is not null)
+                {
+                    return value;
+                }
             }
         }
         return null;

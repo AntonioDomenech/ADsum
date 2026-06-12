@@ -2,7 +2,7 @@
 
 ADsum v2 is a Windows-first .NET desktop recorder with a WPF UI and native WASAPI audio capture.
 
-OpenAI transcription can use a key saved in the app, `ADSUM_OPENAI_API_KEY` / `OPENAI_API_KEY`, or a local `.env` file with either of those names. Transcription runs OpenAI speaker diarization on the combined mixed recording and labels voices as `Speaker A`, `Speaker B`, and so on, without assuming the microphone is a single person. Very long mixed recordings are split into upload-sized WAV chunks before transcription; speaker labels may reset between those local chunks.
+OpenAI transcription can use a key saved in the app, `ADSUM_OPENAI_API_KEY` / `OPENAI_API_KEY`, or a local `.env` file with either of those names. Transcription runs OpenAI speaker diarization on the combined mixed recording and labels voices as `Speaker A`, `Speaker B`, and so on, without assuming the microphone is a single person. ADsum then uses the transcript to create meeting minutes with a summary, important points, tasks or next steps, and decisions. Very long mixed recordings are split into upload-sized WAV chunks before transcription; speaker labels may reset between those local chunks.
 
 ## Run from source
 
@@ -18,7 +18,13 @@ dotnet run --project .\src\ADsum.Desktop\ADsum.Desktop.csproj
 
 The .NET build script creates `dist\ADsum-windows-dotnet.zip`, a self-contained Windows bundle that can be attached to a GitHub Release. People downloading that ZIP do not need to install the .NET runtime.
 
-Recordings are saved under `%LOCALAPPDATA%\ADsum\Recordings\<timestamp-session-name>`. The app also shows the exact folder in the **Last Recording** panel after every recording.
+Meetings are saved under `%LOCALAPPDATA%\ADsum\Recordings\<yyyyMMdd-HHmm-topic>`. The app also shows the exact folder in the **Last Recording** panel after every recording.
+
+Each meeting folder contains:
+
+- `recording.wav`
+- `transcription.md`
+- `meeting-minutes.md`
 
 ## Manual recording test
 
@@ -28,7 +34,7 @@ Recordings are saved under `%LOCALAPPDATA%\ADsum\Recordings\<timestamp-session-n
 4. Select the same headset or speaker output in **System audio**.
 5. Click **Test 6 s**.
 6. While the test runs, speak into the microphone and confirm you hear the test tone normally.
-7. Check the **Last Recording** panel. `Mic`, `System`, and `Mixed` should all show non-zero peak/RMS values.
-8. Click **Transcribe** and confirm the returned text includes at least part of what you said or the test phrase.
+7. Check the **Last Recording** panel. `Recording` should show non-zero peak/RMS values.
+8. Click **Create notes** and confirm `transcription.md` and `meeting-minutes.md` are created in the meeting folder.
 
 For a real online meeting, start playback in Teams/Meet/Zoom first, then click **Record**. ADsum records the selected microphone and WASAPI loopback from the selected output device without taking exclusive control of playback.

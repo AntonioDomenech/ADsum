@@ -29,7 +29,37 @@ public partial class App : Application
             return;
         }
 
+        if (e.Args.Contains("--minutes-file"))
+        {
+            await CreateMinutesFileAsync(e.Args);
+            return;
+        }
+
         new MainWindow().Show();
+    }
+
+    private static async Task CreateMinutesFileAsync(string[] args)
+    {
+        var resultPath = ArgValue(args, "--result") ?? Path.Combine(Path.GetTempPath(), "adsum-minutes-result.json");
+        try
+        {
+            var transcriptPath = ArgValue(args, "--minutes-file")
+                ?? throw new InvalidOperationException("Pass a transcript path after --minutes-file.");
+            var settings = new SettingsStore();
+            var service = new OpenAiMeetingMinutesService();
+            var minutes = await service.CreateMinutesAsync(await File.ReadAllTextAsync(transcriptPath), settings.OpenAiKey, settings.NotesModel);
+            var payload = new { ok = true, minutes };
+            EnsureParentDirectory(resultPath);
+            await File.WriteAllTextAsync(resultPath, JsonSerializer.Serialize(payload, new JsonSerializerOptions { WriteIndented = true }));
+            Current.Shutdown(0);
+        }
+        catch (Exception ex)
+        {
+            var payload = new { ok = false, error = ex.ToString() };
+            EnsureParentDirectory(resultPath);
+            await File.WriteAllTextAsync(resultPath, JsonSerializer.Serialize(payload, new JsonSerializerOptions { WriteIndented = true }));
+            Current.Shutdown(1);
+        }
     }
 
     private static async Task TranscribeFileAsync(string[] args)

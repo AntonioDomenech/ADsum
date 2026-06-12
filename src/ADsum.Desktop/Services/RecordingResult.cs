@@ -9,10 +9,13 @@ public sealed record TrackMetrics(
 public sealed record RecordingResult(
     string Name,
     string SessionDirectory,
+    DateTime StartedAt,
     TimeSpan Duration,
     string? MicrophonePath,
     string? SystemPath,
     string? MixedPath,
+    string? TranscriptPath,
+    string? MinutesPath,
     TrackMetrics Microphone,
     TrackMetrics System,
     TrackMetrics Mixed);

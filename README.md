@@ -14,7 +14,7 @@ dotnet run --project .\src\ADsum.Desktop\ADsum.Desktop.csproj
 
 The desktop app targets .NET 10 on Windows.
 
-OpenAI transcription can use a key saved in the app, `ADSUM_OPENAI_API_KEY` / `OPENAI_API_KEY`, or a local `.env` file with either of those names. Transcription runs OpenAI speaker diarization on the combined mixed recording and labels voices as `Speaker A`, `Speaker B`, and so on, without assuming the microphone is a single person. Very long mixed recordings are split into upload-sized WAV chunks before transcription; speaker labels may reset between those local chunks.
+OpenAI transcription can use a key saved in the app, `ADSUM_OPENAI_API_KEY` / `OPENAI_API_KEY`, or a local `.env` file with either of those names. Transcription runs OpenAI speaker diarization on the combined mixed recording and labels voices as `Speaker A`, `Speaker B`, and so on, without assuming the microphone is a single person. ADsum then uses the transcript to create meeting minutes with a summary, important points, tasks or next steps, and decisions. Very long mixed recordings are split into upload-sized WAV chunks before transcription; speaker labels may reset between those local chunks.
 
 Build a Windows release artifact:
 
@@ -24,6 +24,12 @@ Build a Windows release artifact:
 
 The build creates `dist\ADsum-windows-dotnet.zip`, a self-contained Windows bundle that can be attached to a GitHub Release. People downloading that ZIP do not need to install the .NET runtime. See `docs/v2-windows-desktop.md` for the manual audio test checklist.
 
+Each meeting is stored under `%LOCALAPPDATA%\ADsum\Recordings` in a folder named `yyyyMMdd-HHmm-topic`. The folder contains:
+
+- `recording.wav`
+- `transcription.md`
+- `meeting-minutes.md`
+
 ## Features
 
 - Dual-channel capture architecture with pluggable audio backends.
@@ -31,7 +37,7 @@ The build creates `dist\ADsum-windows-dotnet.zip`, a self-contained Windows bund
 - Streaming-friendly recording pipeline that writes directly to disk.
 - Storage layer backed by SQLite for recording metadata, transcripts, and notes.
 - Speaker-aware transcription services with OpenAI integration and a lightweight dummy fallback for offline tests.
-- Note synthesis service that can call OpenAI or fall back to heuristic summarisation.
+- OpenAI meeting-minutes generation for summaries, discussion points, next steps, and decisions.
 - Typer-powered CLI for device discovery, recording, transcription, and note generation.
 
 ## Repository layout

@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.IO;
 using System.Windows;
 using System.Windows.Controls;
@@ -12,6 +13,7 @@ public partial class MainWindow : Window
     private readonly SettingsStore _settings = new();
     private readonly MeetingRecorder _recorder = new();
     private readonly OpenAiTranscriptionService _transcription = new();
+    private readonly OpenAiMeetingMinutesService _minutes = new();
     private readonly DispatcherTimer _timer;
     private RecordingResult? _lastResult;
 
@@ -27,7 +29,7 @@ public partial class MainWindow : Window
 
     private void MainWindow_Loaded(object sender, RoutedEventArgs e)
     {
-        SessionNameBox.Text = $"Meeting {DateTime.Now:yyyy-MM-dd HH.mm}";
+        SessionNameBox.Text = "";
         KeyStateText.Text = _settings.HasOpenAiKey ? "OpenAI key configured" : "OpenAI key not configured";
         RefreshDevices();
     }
@@ -111,8 +113,18 @@ public partial class MainWindow : Window
         {
             TranscriptStateText.Text = "Diarizing";
             TranscriptBox.Text = "Waiting for OpenAI speaker diarization...";
-            var text = await _transcription.TranscribeAsync(_lastResult.MixedPath, _settings.OpenAiKey);
-            TranscriptBox.Text = string.IsNullOrWhiteSpace(text) ? "(No text returned.)" : text.Trim();
+            MinutesBox.Text = "Waiting for transcript...";
+            var transcript = await _transcription.TranscribeAsync(_lastResult.MixedPath, _settings.OpenAiKey);
+            TranscriptBox.Text = string.IsNullOrWhiteSpace(transcript) ? "(No text returned.)" : transcript.Trim();
+            _lastResult = MeetingArtifactStore.SaveTranscript(_lastResult, transcript);
+            RenderResult(_lastResult);
+
+            TranscriptStateText.Text = "Writing minutes";
+            MinutesBox.Text = "Generating meeting minutes...";
+            var minutes = await _minutes.CreateMinutesAsync(transcript, _settings.OpenAiKey, _settings.NotesModel);
+            _lastResult = MeetingArtifactStore.SaveMinutes(_lastResult, minutes);
+            MinutesBox.Text = minutes.Trim();
+            RenderResult(_lastResult);
             TranscriptStateText.Text = "Done";
         });
     }
@@ -132,6 +144,21 @@ public partial class MainWindow : Window
     }
 
     private void RefreshButton_Click(object sender, RoutedEventArgs e) => RefreshDevices();
+
+    private void OpenFolderButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (_lastResult?.SessionDirectory is null || !Directory.Exists(_lastResult.SessionDirectory))
+        {
+            return;
+        }
+
+        Process.Start(new ProcessStartInfo
+        {
+            FileName = "explorer.exe",
+            Arguments = $"\"{_lastResult.SessionDirectory}\"",
+            UseShellExecute = true
+        });
+    }
 
     private void DeviceCombo_SelectionChanged(object sender, SelectionChangedEventArgs e) => UpdateWarnings();
 
@@ -154,11 +181,12 @@ public partial class MainWindow : Window
         ResultText.Text =
             $"{result.Name}\n" +
             $"{result.Duration.TotalSeconds:F1}s\n\n" +
-            $"Mic: {FormatMetrics(result.Microphone)}\n" +
-            $"System: {FormatMetrics(result.System)}\n" +
-            $"Mixed: {FormatMetrics(result.Mixed)}\n\n" +
+            $"Recording: {FormatMetrics(result.Mixed)}\n" +
+            $"Transcript: {SavedState(result.TranscriptPath)}\n" +
+            $"Minutes: {SavedState(result.MinutesPath)}\n\n" +
             $"Folder: {result.SessionDirectory}";
         TranscribeButton.IsEnabled = result.MixedPath is not null && File.Exists(result.MixedPath);
+        OpenFolderButton.IsEnabled = Directory.Exists(result.SessionDirectory);
     }
 
     private static string FormatMetrics(TrackMetrics metrics)
@@ -169,6 +197,8 @@ public partial class MainWindow : Window
         }
         return $"{metrics.Duration.TotalSeconds:F1}s, peak {metrics.Peak:F3}, rms {metrics.Rms:F3}";
     }
+
+    private static string SavedState(string? path) => !string.IsNullOrWhiteSpace(path) && File.Exists(path) ? "saved" : "not created";
 
     private string SelectedMicrophoneId() => ((AudioDeviceInfo?)MicrophoneCombo.SelectedItem)?.Id ?? string.Empty;
 
@@ -206,5 +236,6 @@ public partial class MainWindow : Window
         RecordButton.IsEnabled = enabled;
         SaveKeyButton.IsEnabled = enabled;
         TranscribeButton.IsEnabled = enabled && _lastResult?.MixedPath is not null;
+        OpenFolderButton.IsEnabled = _lastResult is not null && Directory.Exists(_lastResult.SessionDirectory);
     }
 }
