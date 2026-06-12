@@ -113,6 +113,7 @@
                             <TextBlock Text="Last Recording" FontSize="18" FontWeight="Bold" DockPanel.Dock="Left" />
                             <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
                                 <Button x:Name="OpenFolderButton" Content="Open folder" MinWidth="112" Margin="0,0,8,0" Click="OpenFolderButton_Click" IsEnabled="False" />
+                                <Button x:Name="OpenRecordingButton" Content="Open recording" MinWidth="126" Margin="0,0,8,0" Click="OpenRecordingButton_Click" IsEnabled="False" />
                                 <Button x:Name="TranscribeButton" Content="Create notes" MinWidth="118" Click="TranscribeButton_Click" IsEnabled="False" />
                             </StackPanel>
                         </DockPanel>
@@ -121,24 +122,32 @@
                 </Border>
 
                 <Border Grid.Row="4" Style="{StaticResource Panel}">
-                    <DockPanel>
-                        <DockPanel DockPanel.Dock="Top" Margin="0,0,0,14">
-                            <TextBlock Text="Review Notes" FontSize="18" FontWeight="Bold" DockPanel.Dock="Left" />
-                            <TextBlock x:Name="TranscriptStateText" Text="Ready" Foreground="{StaticResource MutedBrush}" FontWeight="SemiBold" DockPanel.Dock="Right" />
+                    <Grid>
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="*" />
+                        </Grid.RowDefinitions>
+                        <DockPanel Grid.Row="0" Margin="0,0,0,14">
+                            <TextBlock Text="Review Notes" FontSize="18" FontWeight="Bold" DockPanel.Dock="Left" VerticalAlignment="Center" />
+                            <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
+                                <Button x:Name="OpenMinutesButton" Content="Open minutes" MinWidth="112" Margin="0,0,8,0" Click="OpenMinutesButton_Click" IsEnabled="False" />
+                                <Button x:Name="OpenTranscriptButton" Content="Open transcript" MinWidth="126" Margin="0,0,12,0" Click="OpenTranscriptButton_Click" IsEnabled="False" />
+                                <TextBlock x:Name="TranscriptStateText" Text="Ready" Foreground="{StaticResource MutedBrush}" FontWeight="SemiBold" VerticalAlignment="Center" />
+                            </StackPanel>
                         </DockPanel>
-                        <TabControl>
+                        <TabControl Grid.Row="1">
                             <TabItem Header="Minutes">
                                 <TextBox x:Name="MinutesBox" Text="Record audio, then create notes." TextWrapping="Wrap"
-                                         AcceptsReturn="True" IsReadOnly="True" VerticalScrollBarVisibility="Auto" BorderThickness="0"
+                                         AcceptsReturn="True" IsReadOnly="True" VerticalScrollBarVisibility="Visible" HorizontalScrollBarVisibility="Disabled" BorderThickness="0"
                                          Background="Transparent" FontSize="14" Padding="8" />
                             </TabItem>
                             <TabItem Header="Transcript">
                                 <TextBox x:Name="TranscriptBox" Text="Record audio, then create notes." TextWrapping="Wrap"
-                                         AcceptsReturn="True" IsReadOnly="True" VerticalScrollBarVisibility="Auto" BorderThickness="0"
+                                         AcceptsReturn="True" IsReadOnly="True" VerticalScrollBarVisibility="Visible" HorizontalScrollBarVisibility="Disabled" BorderThickness="0"
                                          Background="Transparent" FontSize="14" Padding="8" />
                             </TabItem>
                         </TabControl>
-                    </DockPanel>
+                    </Grid>
                 </Border>
             </Grid>
         </Grid>

@@ -159,12 +159,31 @@ public partial class MainWindow : Window
             return;
         }
 
-        Process.Start(new ProcessStartInfo
+        OpenPath(_lastResult.SessionDirectory);
+    }
+
+    private void OpenRecordingButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (_lastResult?.MixedPath is not null && File.Exists(_lastResult.MixedPath))
         {
-            FileName = "explorer.exe",
-            Arguments = $"\"{_lastResult.SessionDirectory}\"",
-            UseShellExecute = true
-        });
+            OpenPath(_lastResult.MixedPath);
+        }
+    }
+
+    private void OpenMinutesButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (_lastResult?.MinutesPath is not null && File.Exists(_lastResult.MinutesPath))
+        {
+            OpenPath(_lastResult.MinutesPath);
+        }
+    }
+
+    private void OpenTranscriptButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (_lastResult?.TranscriptPath is not null && File.Exists(_lastResult.TranscriptPath))
+        {
+            OpenPath(_lastResult.TranscriptPath);
+        }
     }
 
     private void DeviceCombo_SelectionChanged(object sender, SelectionChangedEventArgs e) => UpdateWarnings();
@@ -195,6 +214,9 @@ public partial class MainWindow : Window
             $"Folder: {result.SessionDirectory}";
         TranscribeButton.IsEnabled = !_isBusy && result.MixedPath is not null && File.Exists(result.MixedPath);
         OpenFolderButton.IsEnabled = !_isBusy && Directory.Exists(result.SessionDirectory);
+        OpenRecordingButton.IsEnabled = !_isBusy && result.MixedPath is not null && File.Exists(result.MixedPath);
+        OpenTranscriptButton.IsEnabled = !_isBusy && result.TranscriptPath is not null && File.Exists(result.TranscriptPath);
+        OpenMinutesButton.IsEnabled = !_isBusy && result.MinutesPath is not null && File.Exists(result.MinutesPath);
     }
 
     private static string FormatMetrics(TrackMetrics metrics)
@@ -252,6 +274,9 @@ public partial class MainWindow : Window
         SaveKeyButton.IsEnabled = enabled;
         TranscribeButton.IsEnabled = enabled && _lastResult?.MixedPath is not null;
         OpenFolderButton.IsEnabled = _lastResult is not null && Directory.Exists(_lastResult.SessionDirectory);
+        OpenRecordingButton.IsEnabled = enabled && _lastResult?.MixedPath is not null && File.Exists(_lastResult.MixedPath);
+        OpenTranscriptButton.IsEnabled = enabled && _lastResult?.TranscriptPath is not null && File.Exists(_lastResult.TranscriptPath);
+        OpenMinutesButton.IsEnabled = enabled && _lastResult?.MinutesPath is not null && File.Exists(_lastResult.MinutesPath);
     }
 
     private void ClearReviewNotes()
@@ -259,5 +284,14 @@ public partial class MainWindow : Window
         TranscriptStateText.Text = "Ready";
         TranscriptBox.Text = "Record audio, then create notes.";
         MinutesBox.Text = "Record audio, then create notes.";
+    }
+
+    private static void OpenPath(string path)
+    {
+        Process.Start(new ProcessStartInfo
+        {
+            FileName = path,
+            UseShellExecute = true
+        });
     }
 }
