@@ -20,5 +20,5 @@ public sealed record MeetingLibraryItem(
     public string DateText => StartedAt?.ToString("yyyy-MM-dd HH:mm") ?? LastWriteTime.ToString("yyyy-MM-dd HH:mm");
 
     public string FileSummary =>
-        $"{(HasRecording ? "audio" : "no audio")} · {(HasTranscript ? "transcript" : "no transcript")} · {(HasMinutes ? "minutes" : "no minutes")}";
+        $"{(HasRecording ? "audio" : "no audio")} - {(HasTranscript ? "transcript" : "no transcript")} - {(HasMinutes ? "minutes" : "no minutes")}";
 }

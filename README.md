@@ -14,7 +14,7 @@ dotnet run --project .\src\ADsum.Desktop\ADsum.Desktop.csproj
 
 The desktop app targets .NET 10 on Windows.
 
-OpenAI transcription can use a key saved in the app, `ADSUM_OPENAI_API_KEY` / `OPENAI_API_KEY`, or a local `.env` file with either of those names. Transcription runs OpenAI speaker diarization on the combined mixed recording and labels voices as `Speaker A`, `Speaker B`, and so on, without assuming the microphone is a single person. ADsum then uses the transcript to create meeting minutes with a summary, important points, tasks or next steps, and decisions. Very long mixed recordings are split into upload-sized WAV chunks before transcription; speaker labels may reset between those local chunks. Meeting minutes default to `gpt-5.5`; set `ADSUM_OPENAI_NOTES_MODEL=gpt-5.4-mini` for a lower-cost notes model.
+OpenAI transcription can use a key saved in the app, `ADSUM_OPENAI_API_KEY` / `OPENAI_API_KEY`, or a local `.env` file with either of those names. Transcription runs OpenAI speaker diarization on the combined mixed recording and labels voices as `Speaker A`, `Speaker B`, and so on, without assuming the microphone is a single person. ADsum then uses the transcript to create meeting minutes with a summary, important points, tasks or next steps, and decisions. Long mixed recordings are split into five-minute/upload-sized WAV chunks before transcription to avoid request timeouts and upload limits; speaker labels may reset between those local chunks. Meeting minutes default to `gpt-5.5`; set `ADSUM_OPENAI_NOTES_MODEL=gpt-5.4-mini` for a lower-cost notes model.
 
 Build a Windows release artifact:
 
@@ -30,7 +30,7 @@ Each meeting is stored under `%LOCALAPPDATA%\ADsum\Recordings` in a folder named
 - `transcription.md`
 - `meeting-minutes.md`
 
-The desktop app also includes a **Library** tab for browsing previous meetings, previewing saved minutes/transcripts, and opening the recording or folder directly.
+The desktop app also includes a **Library** tab for browsing previous meetings, previewing saved minutes/transcripts, opening the recording or folder directly, and creating notes for an older recording if a previous run was interrupted.
 
 ## Features
 

@@ -10,10 +10,19 @@ namespace ADsum.Desktop.Services;
 public sealed class OpenAiTranscriptionService
 {
     private const long MaxUploadBytes = 24L * 1024 * 1024;
+    private static readonly TimeSpan MaxChunkDuration = TimeSpan.FromMinutes(5);
+    private static readonly TimeSpan RequestTimeout = TimeSpan.FromMinutes(30);
     private const string DiarizationModel = "gpt-4o-transcribe-diarize";
-    private static readonly HttpClient Client = new();
+    private static readonly HttpClient Client = new()
+    {
+        Timeout = RequestTimeout
+    };
 
-    public async Task<string> TranscribeAsync(string audioPath, string? apiKey, CancellationToken cancellationToken = default)
+    public async Task<string> TranscribeAsync(
+        string audioPath,
+        string? apiKey,
+        IProgress<string>? progress = null,
+        CancellationToken cancellationToken = default)
     {
         if (string.IsNullOrWhiteSpace(apiKey))
         {
@@ -25,8 +34,9 @@ public sealed class OpenAiTranscriptionService
             throw new FileNotFoundException("Audio file was not found.", audioPath);
         }
 
-        if (new FileInfo(audioPath).Length <= MaxUploadBytes)
+        if (!ShouldChunk(audioPath))
         {
+            progress?.Report("Diarizing audio");
             var transcript = await TranscribeSingleFileAsync(audioPath, apiKey, TimeSpan.Zero, cancellationToken);
             return FormatDiarizedTranscript(transcript, wasChunked: false);
         }
@@ -37,16 +47,26 @@ public sealed class OpenAiTranscriptionService
             var chunks = CreateUploadChunks(audioPath, tempDirectory);
             var segments = new List<DiarizedSegment>();
             var fallbackText = new StringBuilder();
+            var chunkNumber = 1;
             foreach (var chunk in chunks)
             {
+                progress?.Report($"Diarizing chunk {chunkNumber} of {chunks.Count}");
                 var transcript = await TranscribeSingleFileAsync(chunk.Path, apiKey, chunk.Offset, cancellationToken);
+                transcript = transcript with
+                {
+                    Segments = transcript.Segments
+                        .Select(segment => segment with { Speaker = $"{chunk.Index}:{segment.Speaker}" })
+                        .ToList()
+                };
                 segments.AddRange(transcript.Segments);
                 if (!string.IsNullOrWhiteSpace(transcript.Text))
                 {
                     fallbackText.AppendLine(transcript.Text.Trim());
                     fallbackText.AppendLine();
                 }
+                chunkNumber++;
             }
+            progress?.Report("Formatting transcript");
             return FormatDiarizedTranscript(new DiarizedTranscript(segments, fallbackText.ToString()), wasChunked: true);
         }
         finally
@@ -126,7 +146,7 @@ public sealed class OpenAiTranscriptionService
         var output = new StringBuilder();
         if (wasChunked)
         {
-            output.AppendLine("Note: this recording exceeded the upload-size limit and was split before transcription. Speaker labels may reset between upload chunks.");
+            output.AppendLine("Note: this recording was split into smaller transcription chunks for long-meeting reliability. Speaker labels may reset between chunks.");
             output.AppendLine();
         }
 
@@ -171,7 +191,8 @@ public sealed class OpenAiTranscriptionService
         Directory.CreateDirectory(directory);
         using var reader = new WaveFileReader(audioPath);
         var blockAlign = Math.Max(1, reader.WaveFormat.BlockAlign);
-        var maxDataBytes = MaxUploadBytes - 4096;
+        var maxDurationBytes = (long)Math.Floor(reader.WaveFormat.AverageBytesPerSecond * MaxChunkDuration.TotalSeconds);
+        var maxDataBytes = Math.Min(MaxUploadBytes - 4096, maxDurationBytes);
         maxDataBytes -= maxDataBytes % blockAlign;
         var bufferSize = (int)Math.Min(maxDataBytes, 1024 * 1024);
         bufferSize -= bufferSize % blockAlign;
@@ -210,10 +231,22 @@ public sealed class OpenAiTranscriptionService
                     sourceBytesRead += read;
                 }
             }
-            chunks.Add(new UploadChunk(chunkPath, offset));
+            chunks.Add(new UploadChunk(index, chunkPath, offset));
             index++;
         }
         return chunks;
+    }
+
+    private static bool ShouldChunk(string audioPath)
+    {
+        var info = new FileInfo(audioPath);
+        if (info.Length > MaxUploadBytes)
+        {
+            return true;
+        }
+
+        using var reader = new WaveFileReader(audioPath);
+        return reader.TotalTime > MaxChunkDuration;
     }
 
     private static void TryDeleteDirectory(string directory)
@@ -235,7 +268,7 @@ public sealed class OpenAiTranscriptionService
 
     private sealed record DiarizedSegment(TimeSpan Start, TimeSpan End, string Speaker, string Text);
 
-    private sealed record UploadChunk(string Path, TimeSpan Offset);
+    private sealed record UploadChunk(int Index, string Path, TimeSpan Offset);
 
     private sealed class SpeakerLabeler
     {

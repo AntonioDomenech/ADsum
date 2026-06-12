@@ -7,12 +7,18 @@ namespace ADsum.Desktop.Services;
 
 public sealed class OpenAiMeetingMinutesService
 {
-    private static readonly HttpClient Client = new();
+    private const int MaxTranscriptCharactersPerRequest = 60000;
+    private static readonly TimeSpan RequestTimeout = TimeSpan.FromMinutes(30);
+    private static readonly HttpClient Client = new()
+    {
+        Timeout = RequestTimeout
+    };
 
     public async Task<string> CreateMinutesAsync(
         string transcript,
         string? apiKey,
         string model,
+        IProgress<string>? progress = null,
         CancellationToken cancellationToken = default)
     {
         if (string.IsNullOrWhiteSpace(apiKey))
@@ -25,14 +31,64 @@ public sealed class OpenAiMeetingMinutesService
             throw new InvalidOperationException("Generate a transcript before creating meeting minutes.");
         }
 
+        if (transcript.Length > MaxTranscriptCharactersPerRequest)
+        {
+            return await CreateHierarchicalMinutesAsync(transcript, apiKey, model, progress, cancellationToken);
+        }
+
+        progress?.Report("Generating meeting minutes");
+        return await CreateMinutesRequestAsync(
+            BuildInstructions(),
+            BuildInput(transcript),
+            apiKey,
+            model,
+            cancellationToken);
+    }
+
+    private static async Task<string> CreateHierarchicalMinutesAsync(
+        string transcript,
+        string apiKey,
+        string model,
+        IProgress<string>? progress,
+        CancellationToken cancellationToken)
+    {
+        var chunks = SplitTranscript(transcript, MaxTranscriptCharactersPerRequest);
+        var partials = new List<string>();
+        for (var index = 0; index < chunks.Count; index++)
+        {
+            progress?.Report($"Summarizing transcript part {index + 1} of {chunks.Count}");
+            partials.Add(await CreateMinutesRequestAsync(
+                BuildPartialInstructions(),
+                BuildPartialInput(chunks[index], index + 1, chunks.Count),
+                apiKey,
+                model,
+                cancellationToken));
+        }
+
+        progress?.Report("Combining meeting minutes");
+        return await CreateMinutesRequestAsync(
+            BuildInstructions(),
+            BuildFinalInput(partials),
+            apiKey,
+            model,
+            cancellationToken);
+    }
+
+    private static async Task<string> CreateMinutesRequestAsync(
+        string instructions,
+        string input,
+        string apiKey,
+        string model,
+        CancellationToken cancellationToken)
+    {
         using var request = new HttpRequestMessage(HttpMethod.Post, "https://api.openai.com/v1/responses");
         request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", apiKey);
 
         var payload = new
         {
             model,
-            instructions = BuildInstructions(),
-            input = BuildInput(transcript)
+            instructions,
+            input
         };
         request.Content = new StringContent(JsonSerializer.Serialize(payload), Encoding.UTF8, "application/json");
 
@@ -84,6 +140,76 @@ Create meeting minutes for this transcript.
 Transcript:
 {transcript}
 """;
+    }
+
+    private static string BuildPartialInstructions()
+    {
+        return """
+You create practical partial meeting notes from one part of a longer speaker-labelled transcript.
+Use only this transcript part as evidence. Do not invent decisions, owners, deadlines, or tasks.
+Return clean Markdown only, with no code fences.
+
+Required structure:
+## Summary
+One concise paragraph for this part.
+
+## Important points discussed
+- Bullet list.
+
+## Tasks and next steps
+- Bullet list. Include owner and due date when present. Use "Owner: Not specified" or "Due: Not specified" when absent.
+
+## Decisions
+- Bullet list of decisions. If none were made, write "- None identified."
+""";
+    }
+
+    private static string BuildPartialInput(string transcript, int partNumber, int totalParts)
+    {
+        return $"""
+Create partial meeting notes for transcript part {partNumber} of {totalParts}.
+
+Transcript part:
+{transcript}
+""";
+    }
+
+    private static string BuildFinalInput(IReadOnlyList<string> partialMinutes)
+    {
+        var builder = new StringBuilder();
+        builder.AppendLine("Create final meeting minutes by merging these partial notes from one long meeting.");
+        builder.AppendLine("Remove duplicate points, preserve concrete tasks/decisions, and keep the required structure.");
+        builder.AppendLine();
+        for (var index = 0; index < partialMinutes.Count; index++)
+        {
+            builder.AppendLine($"Partial notes {index + 1}:");
+            builder.AppendLine(partialMinutes[index]);
+            builder.AppendLine();
+        }
+        return builder.ToString();
+    }
+
+    private static IReadOnlyList<string> SplitTranscript(string transcript, int maxCharacters)
+    {
+        var chunks = new List<string>();
+        var current = new StringBuilder();
+        foreach (var line in transcript.Split(new[] { "\r\n", "\n" }, StringSplitOptions.None))
+        {
+            if (current.Length > 0 && current.Length + line.Length + 1 > maxCharacters)
+            {
+                chunks.Add(current.ToString());
+                current.Clear();
+            }
+
+            current.AppendLine(line);
+        }
+
+        if (current.Length > 0)
+        {
+            chunks.Add(current.ToString());
+        }
+
+        return chunks;
     }
 
     private static string ExtractOutputText(string body)

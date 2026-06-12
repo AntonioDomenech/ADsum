@@ -203,12 +203,13 @@
                             <TextBlock x:Name="LibraryDetailsText" Grid.Row="1" Text="Saved recordings and notes will appear here." Foreground="{StaticResource MutedBrush}" TextWrapping="Wrap" Margin="0,8,0,0" />
 
                             <DockPanel Grid.Row="3">
-                                <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Margin="0,0,0,14">
+                                <WrapPanel DockPanel.Dock="Top" Margin="0,0,0,14">
                                     <Button x:Name="LibraryOpenFolderButton" Content="Open folder" MinWidth="112" Margin="0,0,8,0" Click="LibraryOpenFolderButton_Click" IsEnabled="False" />
                                     <Button x:Name="LibraryOpenRecordingButton" Content="Open recording" MinWidth="126" Margin="0,0,8,0" Click="LibraryOpenRecordingButton_Click" IsEnabled="False" />
+                                    <Button x:Name="LibraryCreateNotesButton" Content="Create notes" MinWidth="118" Margin="0,0,8,0" Click="LibraryCreateNotesButton_Click" IsEnabled="False" />
                                     <Button x:Name="LibraryOpenMinutesButton" Content="Open minutes" MinWidth="112" Margin="0,0,8,0" Click="LibraryOpenMinutesButton_Click" IsEnabled="False" />
                                     <Button x:Name="LibraryOpenTranscriptButton" Content="Open transcript" MinWidth="126" Click="LibraryOpenTranscriptButton_Click" IsEnabled="False" />
-                                </StackPanel>
+                                </WrapPanel>
                                 <TabControl>
                                     <TabItem Header="Minutes">
                                         <TextBox x:Name="LibraryMinutesBox" Text="Select a meeting with minutes." TextWrapping="Wrap"
