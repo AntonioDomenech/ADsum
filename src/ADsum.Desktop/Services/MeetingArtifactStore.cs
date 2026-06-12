@@ -8,6 +8,7 @@ public static class MeetingArtifactStore
     public const string RecordingFileName = "recording.wav";
     public const string TranscriptFileName = "transcription.md";
     public const string MinutesFileName = "meeting-minutes.md";
+    private const int MaxSlugLength = 80;
 
     public static RecordingResult SaveTranscript(RecordingResult result, string transcript)
     {
@@ -44,7 +45,13 @@ public static class MeetingArtifactStore
                 previousDash = true;
             }
         }
-        return builder.ToString().Trim('-');
+        var slug = builder.ToString().Trim('-');
+        if (slug.Length <= MaxSlugLength)
+        {
+            return slug;
+        }
+
+        return slug[..MaxSlugLength].Trim('-');
     }
 
     public static string UniqueDirectory(string parent, string baseName, string? currentDirectory = null)
@@ -87,7 +94,19 @@ public static class MeetingArtifactStore
             return result;
         }
 
-        Directory.Move(result.SessionDirectory, target);
+        try
+        {
+            Directory.Move(result.SessionDirectory, target);
+        }
+        catch (IOException)
+        {
+            return result with { Name = topic };
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return result with { Name = topic };
+        }
+
         return result with
         {
             Name = topic,

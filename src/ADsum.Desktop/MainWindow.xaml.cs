@@ -16,6 +16,7 @@ public partial class MainWindow : Window
     private readonly OpenAiMeetingMinutesService _minutes = new();
     private readonly DispatcherTimer _timer;
     private RecordingResult? _lastResult;
+    private bool _isBusy;
 
     public MainWindow()
     {
@@ -50,6 +51,7 @@ public partial class MainWindow : Window
     {
         await RunBusyAsync(async () =>
         {
+            ClearReviewNotes();
             ResultText.Text = "Running 6 second device test. Speak into the mic and confirm you hear the tone.";
             await _recorder.RunDeviceTestAsync(
                 SessionNameBox.Text,
@@ -66,11 +68,16 @@ public partial class MainWindow : Window
         try
         {
             _recorder.Start(SessionNameBox.Text, SelectedMicrophoneId(), SelectedOutputId());
+            _lastResult = null;
+            ClearReviewNotes();
+            ResultText.Text = "Recording...";
             StateText.Text = "Recording";
             StopButton.IsEnabled = true;
             RecordButton.IsEnabled = false;
             TestButton.IsEnabled = false;
             RefreshButton.IsEnabled = false;
+            TranscribeButton.IsEnabled = false;
+            OpenFolderButton.IsEnabled = false;
             _timer.Start();
         }
         catch (Exception ex)
@@ -175,6 +182,7 @@ public partial class MainWindow : Window
         {
             ResultText.Text = "No recording yet.";
             TranscribeButton.IsEnabled = false;
+            OpenFolderButton.IsEnabled = false;
             return;
         }
 
@@ -185,8 +193,8 @@ public partial class MainWindow : Window
             $"Transcript: {SavedState(result.TranscriptPath)}\n" +
             $"Minutes: {SavedState(result.MinutesPath)}\n\n" +
             $"Folder: {result.SessionDirectory}";
-        TranscribeButton.IsEnabled = result.MixedPath is not null && File.Exists(result.MixedPath);
-        OpenFolderButton.IsEnabled = Directory.Exists(result.SessionDirectory);
+        TranscribeButton.IsEnabled = !_isBusy && result.MixedPath is not null && File.Exists(result.MixedPath);
+        OpenFolderButton.IsEnabled = !_isBusy && Directory.Exists(result.SessionDirectory);
     }
 
     private static string FormatMetrics(TrackMetrics metrics)
@@ -212,6 +220,12 @@ public partial class MainWindow : Window
 
     private async Task RunBusyAsync(Func<Task> action)
     {
+        if (_isBusy)
+        {
+            return;
+        }
+
+        _isBusy = true;
         ToggleButtons(false);
         try
         {
@@ -224,6 +238,7 @@ public partial class MainWindow : Window
         }
         finally
         {
+            _isBusy = false;
             ToggleButtons(!_recorder.IsRecording);
             StopButton.IsEnabled = _recorder.IsRecording;
         }
@@ -237,5 +252,12 @@ public partial class MainWindow : Window
         SaveKeyButton.IsEnabled = enabled;
         TranscribeButton.IsEnabled = enabled && _lastResult?.MixedPath is not null;
         OpenFolderButton.IsEnabled = _lastResult is not null && Directory.Exists(_lastResult.SessionDirectory);
+    }
+
+    private void ClearReviewNotes()
+    {
+        TranscriptStateText.Text = "Ready";
+        TranscriptBox.Text = "Record audio, then create notes.";
+        MinutesBox.Text = "Record audio, then create notes.";
     }
 }

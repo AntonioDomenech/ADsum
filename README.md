@@ -14,7 +14,7 @@ dotnet run --project .\src\ADsum.Desktop\ADsum.Desktop.csproj
 
 The desktop app targets .NET 10 on Windows.
 
-OpenAI transcription can use a key saved in the app, `ADSUM_OPENAI_API_KEY` / `OPENAI_API_KEY`, or a local `.env` file with either of those names. Transcription runs OpenAI speaker diarization on the combined mixed recording and labels voices as `Speaker A`, `Speaker B`, and so on, without assuming the microphone is a single person. ADsum then uses the transcript to create meeting minutes with a summary, important points, tasks or next steps, and decisions. Very long mixed recordings are split into upload-sized WAV chunks before transcription; speaker labels may reset between those local chunks.
+OpenAI transcription can use a key saved in the app, `ADSUM_OPENAI_API_KEY` / `OPENAI_API_KEY`, or a local `.env` file with either of those names. Transcription runs OpenAI speaker diarization on the combined mixed recording and labels voices as `Speaker A`, `Speaker B`, and so on, without assuming the microphone is a single person. ADsum then uses the transcript to create meeting minutes with a summary, important points, tasks or next steps, and decisions. Very long mixed recordings are split into upload-sized WAV chunks before transcription; speaker labels may reset between those local chunks. Meeting minutes default to `gpt-5.5`; set `ADSUM_OPENAI_NOTES_MODEL=gpt-5.4-mini` for a lower-cost notes model.
 
 Build a Windows release artifact:
 
@@ -149,7 +149,8 @@ Environment variables customise behaviour via `pydantic` settings (prefix `ADSUM
 - `ADSUM_DEFAULT_MIC_DEVICE`: Preferred microphone device identifier remembered between sessions.
 - `ADSUM_DEFAULT_SYSTEM_DEVICE`: Preferred system audio device identifier remembered between sessions.
 - `ADSUM_OPENAI_TRANSCRIPTION_MODEL`: Model used for OpenAI transcription.
-- `ADSUM_OPENAI_NOTES_MODEL`: Model used for OpenAI notes/summarisation.
+- `ADSUM_OPENAI_NOTES_MODEL`: Model used for OpenAI meeting minutes. Defaults to `gpt-5.5`; use `gpt-5.4-mini` for lower-cost long-meeting notes.
+- `ADSUM_OPENAI_MINUTES_MODEL`: Alias for `ADSUM_OPENAI_NOTES_MODEL`.
 - `ADSUM_OPENAI_API_KEY`: Optional API key forwarded to the OpenAI client (falls back to `OPENAI_API_KEY`).
 - `ADSUM_OPENAI_MAX_UPLOAD_BYTES`: Maximum payload size (default ~24 MiB) before recordings are automatically split for OpenAI uploads.
 
