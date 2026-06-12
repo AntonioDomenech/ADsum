@@ -109,8 +109,8 @@ public partial class MainWindow : Window
 
         await RunBusyAsync(async () =>
         {
-            TranscriptStateText.Text = "Transcribing";
-            TranscriptBox.Text = "Waiting for OpenAI...";
+            TranscriptStateText.Text = "Diarizing";
+            TranscriptBox.Text = "Waiting for OpenAI speaker diarization...";
             var text = await _transcription.TranscribeAsync(_lastResult.MixedPath, _settings.OpenAiKey);
             TranscriptBox.Text = string.IsNullOrWhiteSpace(text) ? "(No text returned.)" : text.Trim();
             TranscriptStateText.Text = "Done";

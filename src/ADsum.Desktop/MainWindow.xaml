@@ -111,7 +111,7 @@
                     <DockPanel>
                         <DockPanel DockPanel.Dock="Top" Margin="0,0,0,14">
                             <TextBlock Text="Last Recording" FontSize="18" FontWeight="Bold" DockPanel.Dock="Left" />
-                            <Button x:Name="TranscribeButton" Content="Transcribe" DockPanel.Dock="Right" MinWidth="112" Click="TranscribeButton_Click" IsEnabled="False" />
+                            <Button x:Name="TranscribeButton" Content="Transcribe speakers" DockPanel.Dock="Right" MinWidth="148" Click="TranscribeButton_Click" IsEnabled="False" />
                         </DockPanel>
                         <TextBlock x:Name="ResultText" Text="No recording yet." Foreground="{StaticResource MutedBrush}" TextWrapping="Wrap" />
                     </DockPanel>
@@ -120,10 +120,10 @@
                 <Border Grid.Row="4" Style="{StaticResource Panel}">
                     <DockPanel>
                         <DockPanel DockPanel.Dock="Top" Margin="0,0,0,14">
-                            <TextBlock Text="Transcript" FontSize="18" FontWeight="Bold" DockPanel.Dock="Left" />
+                            <TextBlock Text="Speaker Transcript" FontSize="18" FontWeight="Bold" DockPanel.Dock="Left" />
                             <TextBlock x:Name="TranscriptStateText" Text="Ready" Foreground="{StaticResource MutedBrush}" FontWeight="SemiBold" DockPanel.Dock="Right" />
                         </DockPanel>
-                        <TextBox x:Name="TranscriptBox" Text="Record audio, then transcribe." TextWrapping="Wrap"
+                        <TextBox x:Name="TranscriptBox" Text="Record audio, then transcribe speakers." TextWrapping="Wrap"
                                  AcceptsReturn="True" IsReadOnly="True" VerticalScrollBarVisibility="Auto" BorderThickness="0"
                                  Background="Transparent" FontSize="14" />
                     </DockPanel>

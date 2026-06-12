@@ -14,7 +14,7 @@ dotnet run --project .\src\ADsum.Desktop\ADsum.Desktop.csproj
 
 The desktop app targets .NET 10 on Windows.
 
-OpenAI transcription can use a key saved in the app, `ADSUM_OPENAI_API_KEY` / `OPENAI_API_KEY`, or a local `.env` file with either of those names. Long mixed recordings are split into upload-sized WAV chunks before transcription.
+OpenAI transcription can use a key saved in the app, `ADSUM_OPENAI_API_KEY` / `OPENAI_API_KEY`, or a local `.env` file with either of those names. Transcription runs OpenAI speaker diarization on the combined mixed recording and labels voices as `Speaker A`, `Speaker B`, and so on, without assuming the microphone is a single person. Very long mixed recordings are split into upload-sized WAV chunks before transcription; speaker labels may reset between those local chunks.
 
 Build a Windows release artifact:
 
@@ -30,7 +30,7 @@ The build creates `dist\ADsum-windows-dotnet.zip`, a self-contained Windows bund
 - Windows desktop UI with microphone plus WASAPI loopback recording.
 - Streaming-friendly recording pipeline that writes directly to disk.
 - Storage layer backed by SQLite for recording metadata, transcripts, and notes.
-- Transcription services with OpenAI integration and a lightweight dummy fallback for offline tests.
+- Speaker-aware transcription services with OpenAI integration and a lightweight dummy fallback for offline tests.
 - Note synthesis service that can call OpenAI or fall back to heuristic summarisation.
 - Typer-powered CLI for device discovery, recording, transcription, and note generation.
 

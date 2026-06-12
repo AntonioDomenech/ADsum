@@ -2,7 +2,7 @@
 
 ADsum v2 is a Windows-first .NET desktop recorder with a WPF UI and native WASAPI audio capture.
 
-OpenAI transcription can use a key saved in the app, `ADSUM_OPENAI_API_KEY` / `OPENAI_API_KEY`, or a local `.env` file with either of those names. Long mixed recordings are split into upload-sized WAV chunks before transcription.
+OpenAI transcription can use a key saved in the app, `ADSUM_OPENAI_API_KEY` / `OPENAI_API_KEY`, or a local `.env` file with either of those names. Transcription runs OpenAI speaker diarization on the combined mixed recording and labels voices as `Speaker A`, `Speaker B`, and so on, without assuming the microphone is a single person. Very long mixed recordings are split into upload-sized WAV chunks before transcription; speaker labels may reset between those local chunks.
 
 ## Run from source
 

@@ -23,7 +23,37 @@ public partial class App : Application
             return;
         }
 
+        if (e.Args.Contains("--transcribe-file"))
+        {
+            await TranscribeFileAsync(e.Args);
+            return;
+        }
+
         new MainWindow().Show();
+    }
+
+    private static async Task TranscribeFileAsync(string[] args)
+    {
+        var resultPath = ArgValue(args, "--result") ?? Path.Combine(Path.GetTempPath(), "adsum-transcription-result.json");
+        try
+        {
+            var audioPath = ArgValue(args, "--transcribe-file")
+                ?? throw new InvalidOperationException("Pass an audio path after --transcribe-file.");
+            var settings = new SettingsStore();
+            var service = new OpenAiTranscriptionService();
+            var text = await service.TranscribeAsync(audioPath, settings.OpenAiKey);
+            var payload = new { ok = true, text };
+            EnsureParentDirectory(resultPath);
+            await File.WriteAllTextAsync(resultPath, JsonSerializer.Serialize(payload, new JsonSerializerOptions { WriteIndented = true }));
+            Current.Shutdown(0);
+        }
+        catch (Exception ex)
+        {
+            var payload = new { ok = false, error = ex.ToString() };
+            EnsureParentDirectory(resultPath);
+            await File.WriteAllTextAsync(resultPath, JsonSerializer.Serialize(payload, new JsonSerializerOptions { WriteIndented = true }));
+            Current.Shutdown(1);
+        }
     }
 
     private static async Task RunSmokeTestAsync(string[] args)
