@@ -48,14 +48,22 @@ public sealed class OpenAiTranscriptionService
         try
         {
             progress?.Report("Compressing recording for upload");
-            var compressedPath = TryCreateCompressedUploadCopy(audioPath, tempDirectory);
-            if (compressedPath is not null)
+            foreach (var compressedUpload in CreateCompressedUploadCopies(audioPath, tempDirectory))
             {
-                progress?.Report("Diarizing full recording");
-                var transcript = await TranscribeSingleFileAsync(compressedPath, apiKey, TimeSpan.Zero, cancellationToken);
-                return FormatDiarizedTranscript(transcript, wasChunked: false);
+                try
+                {
+                    progress?.Report($"Diarizing full recording ({compressedUpload.Label})");
+                    var transcript = await TranscribeSingleFileAsync(compressedUpload.Path, apiKey, TimeSpan.Zero, cancellationToken);
+                    return FormatDiarizedTranscript(transcript, wasChunked: false);
+                }
+                catch (InvalidOperationException ex) when (IsInvalidAudioUploadError(ex))
+                {
+                    progress?.Report($"Full recording upload rejected ({compressedUpload.Label}); trying another format");
+                    TryDeleteFile(compressedUpload.Path);
+                }
             }
 
+            progress?.Report("Splitting recording for upload");
             var chunks = CreateUploadChunks(audioPath, tempDirectory);
             var segments = new List<DiarizedSegment>();
             var fallbackText = new StringBuilder();
@@ -253,13 +261,13 @@ public sealed class OpenAiTranscriptionService
         return new FileInfo(audioPath).Length <= MaxUploadBytes;
     }
 
-    private static string? TryCreateCompressedUploadCopy(string audioPath, string directory)
+    private static IEnumerable<CompressedUpload> CreateCompressedUploadCopies(string audioPath, string directory)
     {
         Directory.CreateDirectory(directory);
         var duration = AudioDuration(audioPath);
         if (duration <= TimeSpan.Zero)
         {
-            return null;
+            yield break;
         }
 
         var bitRates = CandidateBitRates(duration);
@@ -269,22 +277,33 @@ public sealed class OpenAiTranscriptionService
             {
                 var extension = encoder == CompressedEncoder.Mp3 ? ".mp3" : ".m4a";
                 var path = Path.Combine(directory, $"upload-{bitRate}-{encoder.ToString().ToLowerInvariant()}{extension}");
+                CompressedUpload? upload = null;
                 try
                 {
                     EncodeCompressed(audioPath, path, bitRate, encoder);
                     if (File.Exists(path) && new FileInfo(path).Length <= MaxUploadBytes)
                     {
-                        return path;
+                        upload = new CompressedUpload(path, bitRate, encoder);
                     }
                 }
                 catch
                 {
                     TryDeleteFile(path);
                 }
+
+                if (upload is not null)
+                {
+                    yield return upload;
+                }
             }
         }
+    }
 
-        return null;
+    private static bool IsInvalidAudioUploadError(Exception ex)
+    {
+        var message = ex.Message;
+        return message.Contains("\"param\": \"file\"", StringComparison.OrdinalIgnoreCase)
+            && message.Contains("\"code\": \"invalid_value\"", StringComparison.OrdinalIgnoreCase);
     }
 
     private static IReadOnlyList<int> CandidateBitRates(TimeSpan duration)
@@ -368,6 +387,11 @@ public sealed class OpenAiTranscriptionService
     private sealed record DiarizedSegment(TimeSpan Start, TimeSpan End, string Speaker, string Text);
 
     private sealed record UploadChunk(int Index, string Path, TimeSpan Offset);
+
+    private sealed record CompressedUpload(string Path, int BitRate, CompressedEncoder Encoder)
+    {
+        public string Label => $"{Encoder.ToString().ToLowerInvariant()} {BitRate / 1000} kbps";
+    }
 
     private enum CompressedEncoder
     {
