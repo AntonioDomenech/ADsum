@@ -14,6 +14,8 @@ public sealed class OpenAiTranscriptionService
     private const long UploadSafetyBytes = 1024 * 1024;
     private const int MaximumSpeechBitRate = 32000;
     private const int MinimumSpeechBitRate = 8000;
+    private static readonly TimeSpan MaximumDiarizationDuration = TimeSpan.FromSeconds(1400);
+    private static readonly TimeSpan ChunkDurationSafetyMargin = TimeSpan.FromSeconds(5);
     private static readonly TimeSpan RequestTimeout = TimeSpan.FromMinutes(30);
     private const string DiarizationModel = "gpt-4o-transcribe-diarize";
     private static readonly HttpClient Client = new()
@@ -37,7 +39,8 @@ public sealed class OpenAiTranscriptionService
             throw new FileNotFoundException("Audio file was not found.", audioPath);
         }
 
-        if (CanUploadSingleFile(audioPath))
+        var duration = AudioDuration(audioPath);
+        if (CanUploadSingleFile(audioPath, duration))
         {
             progress?.Report("Diarizing audio");
             var transcript = await TranscribeSingleFileAsync(audioPath, apiKey, TimeSpan.Zero, cancellationToken);
@@ -47,20 +50,27 @@ public sealed class OpenAiTranscriptionService
         var tempDirectory = Path.Combine(Path.GetTempPath(), "ADsum", "TranscriptionChunks", Guid.NewGuid().ToString("N"));
         try
         {
-            progress?.Report("Compressing recording for upload");
-            foreach (var compressedUpload in CreateCompressedUploadCopies(audioPath, tempDirectory))
+            if (duration <= MaximumDiarizationDuration)
             {
-                try
+                progress?.Report("Compressing recording for upload");
+                foreach (var compressedUpload in CreateCompressedUploadCopies(audioPath, tempDirectory, duration))
                 {
-                    progress?.Report($"Diarizing full recording ({compressedUpload.Label})");
-                    var transcript = await TranscribeSingleFileAsync(compressedUpload.Path, apiKey, TimeSpan.Zero, cancellationToken);
-                    return FormatDiarizedTranscript(transcript, wasChunked: false);
+                    try
+                    {
+                        progress?.Report($"Diarizing full recording ({compressedUpload.Label})");
+                        var transcript = await TranscribeSingleFileAsync(compressedUpload.Path, apiKey, TimeSpan.Zero, cancellationToken);
+                        return FormatDiarizedTranscript(transcript, wasChunked: false);
+                    }
+                    catch (InvalidOperationException ex) when (IsRecoverableFullRecordingError(ex))
+                    {
+                        progress?.Report($"Full recording upload rejected ({compressedUpload.Label}); trying another format");
+                        TryDeleteFile(compressedUpload.Path);
+                    }
                 }
-                catch (InvalidOperationException ex) when (IsInvalidAudioUploadError(ex))
-                {
-                    progress?.Report($"Full recording upload rejected ({compressedUpload.Label}); trying another format");
-                    TryDeleteFile(compressedUpload.Path);
-                }
+            }
+            else
+            {
+                progress?.Report("Recording is longer than the diarization limit; splitting for upload");
             }
 
             progress?.Report("Splitting recording for upload");
@@ -211,7 +221,9 @@ public sealed class OpenAiTranscriptionService
         Directory.CreateDirectory(directory);
         using var reader = new WaveFileReader(audioPath);
         var blockAlign = Math.Max(1, reader.WaveFormat.BlockAlign);
-        var maxDataBytes = MaxUploadBytes - 4096;
+        var durationLimit = MaximumDiarizationDuration - ChunkDurationSafetyMargin;
+        var maxDurationBytes = (long)Math.Floor(durationLimit.TotalSeconds * Math.Max(1, reader.WaveFormat.AverageBytesPerSecond));
+        var maxDataBytes = Math.Min(MaxUploadBytes - 4096, maxDurationBytes);
         maxDataBytes -= maxDataBytes % blockAlign;
         var bufferSize = (int)Math.Min(maxDataBytes, 1024 * 1024);
         bufferSize -= bufferSize % blockAlign;
@@ -256,15 +268,15 @@ public sealed class OpenAiTranscriptionService
         return chunks;
     }
 
-    private static bool CanUploadSingleFile(string audioPath)
+    private static bool CanUploadSingleFile(string audioPath, TimeSpan duration)
     {
-        return new FileInfo(audioPath).Length <= MaxUploadBytes;
+        return duration <= MaximumDiarizationDuration
+            && new FileInfo(audioPath).Length <= MaxUploadBytes;
     }
 
-    private static IEnumerable<CompressedUpload> CreateCompressedUploadCopies(string audioPath, string directory)
+    private static IEnumerable<CompressedUpload> CreateCompressedUploadCopies(string audioPath, string directory, TimeSpan duration)
     {
         Directory.CreateDirectory(directory);
-        var duration = AudioDuration(audioPath);
         if (duration <= TimeSpan.Zero)
         {
             yield break;
@@ -299,10 +311,24 @@ public sealed class OpenAiTranscriptionService
         }
     }
 
+    private static bool IsRecoverableFullRecordingError(Exception ex)
+    {
+        return IsInvalidAudioUploadError(ex) || IsDiarizationDurationLimitError(ex);
+    }
+
     private static bool IsInvalidAudioUploadError(Exception ex)
     {
         var message = ex.Message;
         return message.Contains("\"param\": \"file\"", StringComparison.OrdinalIgnoreCase)
+            && message.Contains("\"code\": \"invalid_value\"", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool IsDiarizationDurationLimitError(Exception ex)
+    {
+        var message = ex.Message;
+        return message.Contains("audio duration", StringComparison.OrdinalIgnoreCase)
+            && message.Contains("longer than", StringComparison.OrdinalIgnoreCase)
+            && message.Contains("1400 seconds", StringComparison.OrdinalIgnoreCase)
             && message.Contains("\"code\": \"invalid_value\"", StringComparison.OrdinalIgnoreCase);
     }
 
