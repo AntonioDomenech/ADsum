@@ -34,8 +34,8 @@ public sealed partial class MeetingLibraryService
             startedAt,
             info.LastWriteTime,
             FirstExistingPath(directory, MeetingArtifactStore.RecordingFileName, "mixed.wav"),
-            FirstExistingPath(directory, MeetingArtifactStore.TranscriptFileName),
-            FirstExistingPath(directory, MeetingArtifactStore.MinutesFileName));
+            FindTranscriptPath(directory, topic),
+            FindNotesPath(directory, topic));
     }
 
     private static (DateTime? StartedAt, string Topic) ParseFolderName(string folderName)
@@ -84,6 +84,28 @@ public sealed partial class MeetingLibraryService
         }
 
         return null;
+    }
+
+    private static string? FindTranscriptPath(string directory, string topic) =>
+        FirstExistingPath(
+            directory,
+            MeetingArtifactStore.TranscriptFileNameForTopic(topic),
+            MeetingArtifactStore.LegacyTranscriptFileName)
+        ?? FirstMatchingPath(directory, "transcription-*.md");
+
+    private static string? FindNotesPath(string directory, string topic) =>
+        FirstExistingPath(
+            directory,
+            MeetingArtifactStore.NotesFileNameForTopic(topic),
+            MeetingArtifactStore.LegacyMinutesFileName)
+        ?? FirstMatchingPath(directory, "notes-*.md");
+
+    private static string? FirstMatchingPath(string directory, string pattern)
+    {
+        return Directory
+            .EnumerateFiles(directory, pattern)
+            .OrderByDescending(File.GetLastWriteTime)
+            .FirstOrDefault();
     }
 
     [GeneratedRegex("^(?<stamp>\\d{8}-\\d{6}|\\d{8}-\\d{4})-?")]

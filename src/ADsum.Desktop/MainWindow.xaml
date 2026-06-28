@@ -116,7 +116,8 @@
                             <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
                                 <Button x:Name="OpenFolderButton" Content="Open folder" MinWidth="112" Margin="0,0,8,0" Click="OpenFolderButton_Click" IsEnabled="False" />
                                 <Button x:Name="OpenRecordingButton" Content="Open recording" MinWidth="126" Margin="0,0,8,0" Click="OpenRecordingButton_Click" IsEnabled="False" />
-                                <Button x:Name="TranscribeButton" Content="Create notes" MinWidth="118" Click="TranscribeButton_Click" IsEnabled="False" />
+                                <Button x:Name="TranscribeButton" Content="Create transcript" MinWidth="136" Margin="0,0,8,0" Click="TranscribeButton_Click" IsEnabled="False" />
+                                <Button x:Name="CreateNotesButton" Content="Create notes" MinWidth="118" Click="CreateNotesButton_Click" IsEnabled="False" />
                             </StackPanel>
                         </DockPanel>
                         <TextBlock x:Name="ResultText" Text="No recording yet." Foreground="{StaticResource MutedBrush}" TextWrapping="Wrap" />
@@ -130,7 +131,7 @@
                             <RowDefinition Height="*" />
                         </Grid.RowDefinitions>
                         <DockPanel Grid.Row="0" Margin="0,0,0,14">
-                            <TextBlock Text="Review Notes" FontSize="18" FontWeight="Bold" DockPanel.Dock="Left" VerticalAlignment="Center" />
+                            <TextBlock Text="Review" FontSize="18" FontWeight="Bold" DockPanel.Dock="Left" VerticalAlignment="Center" />
                             <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
                                 <Button x:Name="OpenMinutesButton" Content="Open minutes" MinWidth="112" Margin="0,0,8,0" Click="OpenMinutesButton_Click" IsEnabled="False" />
                                 <Button x:Name="OpenTranscriptButton" Content="Open transcript" MinWidth="126" Margin="0,0,12,0" Click="OpenTranscriptButton_Click" IsEnabled="False" />
@@ -139,12 +140,12 @@
                         </DockPanel>
                         <TabControl Grid.Row="1">
                             <TabItem Header="Minutes">
-                                <TextBox x:Name="MinutesBox" Text="Record audio, then create notes." TextWrapping="Wrap"
+                                <TextBox x:Name="MinutesBox" Text="Create a transcript, then create notes." TextWrapping="Wrap"
                                          AcceptsReturn="True" IsReadOnly="True" VerticalScrollBarVisibility="Visible" HorizontalScrollBarVisibility="Disabled" BorderThickness="0"
                                          Background="Transparent" FontSize="14" Padding="8" />
                             </TabItem>
                             <TabItem Header="Transcript">
-                                <TextBox x:Name="TranscriptBox" Text="Record audio, then create notes." TextWrapping="Wrap"
+                                <TextBox x:Name="TranscriptBox" Text="Record audio, then create a transcript." TextWrapping="Wrap"
                                          AcceptsReturn="True" IsReadOnly="True" VerticalScrollBarVisibility="Visible" HorizontalScrollBarVisibility="Disabled" BorderThickness="0"
                                          Background="Transparent" FontSize="14" Padding="8" />
                             </TabItem>
@@ -206,6 +207,7 @@
                                 <WrapPanel DockPanel.Dock="Top" Margin="0,0,0,14">
                                     <Button x:Name="LibraryOpenFolderButton" Content="Open folder" MinWidth="112" Margin="0,0,8,0" Click="LibraryOpenFolderButton_Click" IsEnabled="False" />
                                     <Button x:Name="LibraryOpenRecordingButton" Content="Open recording" MinWidth="126" Margin="0,0,8,0" Click="LibraryOpenRecordingButton_Click" IsEnabled="False" />
+                                    <Button x:Name="LibraryTranscribeButton" Content="Create transcript" MinWidth="136" Margin="0,0,8,0" Click="LibraryTranscribeButton_Click" IsEnabled="False" />
                                     <Button x:Name="LibraryCreateNotesButton" Content="Create notes" MinWidth="118" Margin="0,0,8,0" Click="LibraryCreateNotesButton_Click" IsEnabled="False" />
                                     <Button x:Name="LibraryOpenMinutesButton" Content="Open minutes" MinWidth="112" Margin="0,0,8,0" Click="LibraryOpenMinutesButton_Click" IsEnabled="False" />
                                     <Button x:Name="LibraryOpenTranscriptButton" Content="Open transcript" MinWidth="126" Click="LibraryOpenTranscriptButton_Click" IsEnabled="False" />

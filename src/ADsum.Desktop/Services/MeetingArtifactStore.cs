@@ -6,14 +6,14 @@ namespace ADsum.Desktop.Services;
 public static class MeetingArtifactStore
 {
     public const string RecordingFileName = "recording.wav";
-    public const string TranscriptFileName = "transcription.md";
-    public const string MinutesFileName = "meeting-minutes.md";
+    public const string LegacyTranscriptFileName = "transcription.md";
+    public const string LegacyMinutesFileName = "meeting-minutes.md";
     private const int MaxSlugLength = 80;
 
     public static RecordingResult SaveTranscript(RecordingResult result, string transcript)
     {
         Directory.CreateDirectory(result.SessionDirectory);
-        var path = Path.Combine(result.SessionDirectory, TranscriptFileName);
+        var path = Path.Combine(result.SessionDirectory, TranscriptFileNameForTopic(result.Name));
         File.WriteAllText(path, BuildTranscriptMarkdown(result, transcript), Encoding.UTF8);
         return result with { TranscriptPath = path };
     }
@@ -22,10 +22,15 @@ public static class MeetingArtifactStore
     {
         var topic = ExtractMarkdownTitle(minutesMarkdown) ?? result.Name;
         result = MoveToTopicDirectory(result, topic);
-        var path = Path.Combine(result.SessionDirectory, MinutesFileName);
+        result = RenameTranscriptForTopic(result);
+        var path = Path.Combine(result.SessionDirectory, NotesFileNameForTopic(result.Name));
         File.WriteAllText(path, minutesMarkdown.Trim() + Environment.NewLine, Encoding.UTF8);
         return result with { MinutesPath = path };
     }
+
+    public static string TranscriptFileNameForTopic(string topic) => $"transcription-{SlugOrUntitled(topic)}.md";
+
+    public static string NotesFileNameForTopic(string topic) => $"notes-{SlugOrUntitled(topic)}.md";
 
     public static string Slugify(string value)
     {
@@ -71,6 +76,46 @@ public static class MeetingArtifactStore
                 return candidate;
             }
         }
+    }
+
+    private static RecordingResult RenameTranscriptForTopic(RecordingResult result)
+    {
+        if (string.IsNullOrWhiteSpace(result.TranscriptPath) || !File.Exists(result.TranscriptPath))
+        {
+            return result;
+        }
+
+        var target = Path.Combine(result.SessionDirectory, TranscriptFileNameForTopic(result.Name));
+        if (SamePath(target, result.TranscriptPath))
+        {
+            return result;
+        }
+
+        if (File.Exists(target))
+        {
+            return result with { TranscriptPath = target };
+        }
+
+        try
+        {
+            File.Move(result.TranscriptPath, target);
+        }
+        catch (IOException)
+        {
+            return result;
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return result;
+        }
+
+        return result with { TranscriptPath = target };
+    }
+
+    private static string SlugOrUntitled(string value)
+    {
+        var slug = Slugify(value);
+        return string.IsNullOrWhiteSpace(slug) ? "untitled-meeting" : slug;
     }
 
     private static RecordingResult MoveToTopicDirectory(RecordingResult result, string topic)

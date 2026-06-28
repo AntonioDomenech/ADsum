@@ -79,6 +79,7 @@ public partial class MainWindow : Window
             TestButton.IsEnabled = false;
             RefreshButton.IsEnabled = false;
             TranscribeButton.IsEnabled = false;
+            CreateNotesButton.IsEnabled = false;
             OpenFolderButton.IsEnabled = false;
             _timer.Start();
         }
@@ -123,19 +124,35 @@ public partial class MainWindow : Window
         {
             TranscriptStateText.Text = "Diarizing";
             TranscriptBox.Text = "Waiting for OpenAI speaker diarization...";
-            MinutesBox.Text = "Waiting for transcript...";
+            MinutesBox.Text = "Transcript is being created. Notes are separate.";
             var transcriptProgress = new Progress<string>(message => TranscriptStateText.Text = message);
             var transcript = await _transcription.TranscribeAsync(_lastResult.MixedPath, _settings.OpenAiKey, transcriptProgress);
             TranscriptBox.Text = string.IsNullOrWhiteSpace(transcript) ? "(No text returned.)" : transcript.Trim();
             _lastResult = MeetingArtifactStore.SaveTranscript(_lastResult, transcript);
             RenderResult(_lastResult);
+            RefreshLibrary(_lastResult.SessionDirectory);
+            TranscriptStateText.Text = "Done";
+        });
+    }
 
-            TranscriptStateText.Text = "Writing minutes";
-            MinutesBox.Text = "Generating meeting minutes...";
+    private async void CreateNotesButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (_lastResult?.TranscriptPath is null || !File.Exists(_lastResult.TranscriptPath))
+        {
+            MessageBox.Show(this, "Create a transcript before generating notes.", "No transcript", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        await RunBusyAsync(async () =>
+        {
+            TranscriptStateText.Text = "Writing notes";
+            MinutesBox.Text = "Generating meeting notes...";
+            var transcript = File.ReadAllText(_lastResult.TranscriptPath);
             var minutesProgress = new Progress<string>(message => TranscriptStateText.Text = message);
             var minutes = await _minutes.CreateMinutesAsync(transcript, _settings.OpenAiKey, _settings.NotesModel, minutesProgress);
             _lastResult = MeetingArtifactStore.SaveMinutes(_lastResult, minutes);
             MinutesBox.Text = minutes.Trim();
+            TranscriptBox.Text = ReadTextPreview(_lastResult.TranscriptPath, "No transcript saved for this meeting.");
             RenderResult(_lastResult);
             RefreshLibrary(_lastResult.SessionDirectory);
             TranscriptStateText.Text = "Done";
@@ -222,7 +239,7 @@ public partial class MainWindow : Window
         }
     }
 
-    private async void LibraryCreateNotesButton_Click(object sender, RoutedEventArgs e)
+    private async void LibraryTranscribeButton_Click(object sender, RoutedEventArgs e)
     {
         var item = SelectedLibraryMeeting();
         if (item?.RecordingPath is null || !File.Exists(item.RecordingPath))
@@ -234,9 +251,9 @@ public partial class MainWindow : Window
         var refreshDirectory = item.DirectoryPath;
         await RunBusyAsync(async () =>
         {
-            SetLibraryButtons(false, false, false, false, false);
+            SetLibraryButtons(false, false, false, false, false, false);
             LibraryTranscriptBox.Text = "Waiting for OpenAI speaker diarization...";
-            LibraryMinutesBox.Text = "Waiting for transcript...";
+            LibraryMinutesBox.Text = "Transcript is being created. Notes are separate.";
 
             var result = RecordingResultFromLibraryItem(item);
             var transcriptProgress = new Progress<string>(message => LibraryDetailsText.Text = BuildLibraryProcessingText(result, message));
@@ -244,11 +261,36 @@ public partial class MainWindow : Window
             result = MeetingArtifactStore.SaveTranscript(result, transcript);
             LibraryTranscriptBox.Text = string.IsNullOrWhiteSpace(transcript) ? "(No text returned.)" : transcript.Trim();
 
-            LibraryMinutesBox.Text = "Generating meeting minutes...";
+            _lastResult = result;
+            RenderResult(_lastResult);
+            refreshDirectory = result.SessionDirectory;
+            LibraryDetailsText.Text = BuildLibraryProcessingText(result, "Done");
+        });
+        RefreshLibrary(refreshDirectory);
+    }
+
+    private async void LibraryCreateNotesButton_Click(object sender, RoutedEventArgs e)
+    {
+        var item = SelectedLibraryMeeting();
+        if (item?.TranscriptPath is null || !File.Exists(item.TranscriptPath))
+        {
+            MessageBox.Show(this, "Create a transcript before generating notes.", "No transcript", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        var refreshDirectory = item.DirectoryPath;
+        await RunBusyAsync(async () =>
+        {
+            SetLibraryButtons(false, false, false, false, false, false);
+            LibraryMinutesBox.Text = "Generating meeting notes...";
+
+            var result = RecordingResultFromLibraryItem(item, requireRecording: false);
+            var transcript = File.ReadAllText(result.TranscriptPath!);
             var minutesProgress = new Progress<string>(message => LibraryDetailsText.Text = BuildLibraryProcessingText(result, message));
             var minutes = await _minutes.CreateMinutesAsync(transcript, _settings.OpenAiKey, _settings.NotesModel, minutesProgress);
             result = MeetingArtifactStore.SaveMinutes(result, minutes);
             LibraryMinutesBox.Text = minutes.Trim();
+            LibraryTranscriptBox.Text = ReadTextPreview(result.TranscriptPath, "No transcript saved for this meeting.");
 
             _lastResult = result;
             RenderResult(_lastResult);
@@ -291,7 +333,11 @@ public partial class MainWindow : Window
         {
             ResultText.Text = "No recording yet.";
             TranscribeButton.IsEnabled = false;
+            CreateNotesButton.IsEnabled = false;
             OpenFolderButton.IsEnabled = false;
+            OpenRecordingButton.IsEnabled = false;
+            OpenTranscriptButton.IsEnabled = false;
+            OpenMinutesButton.IsEnabled = false;
             return;
         }
 
@@ -303,6 +349,7 @@ public partial class MainWindow : Window
             $"Minutes: {SavedState(result.MinutesPath)}\n\n" +
             $"Folder: {result.SessionDirectory}";
         TranscribeButton.IsEnabled = !_isBusy && result.MixedPath is not null && File.Exists(result.MixedPath);
+        CreateNotesButton.IsEnabled = !_isBusy && result.TranscriptPath is not null && File.Exists(result.TranscriptPath);
         OpenFolderButton.IsEnabled = !_isBusy && Directory.Exists(result.SessionDirectory);
         OpenRecordingButton.IsEnabled = !_isBusy && result.MixedPath is not null && File.Exists(result.MixedPath);
         OpenTranscriptButton.IsEnabled = !_isBusy && result.TranscriptPath is not null && File.Exists(result.TranscriptPath);
@@ -363,6 +410,7 @@ public partial class MainWindow : Window
         RecordButton.IsEnabled = enabled;
         SaveKeyButton.IsEnabled = enabled;
         TranscribeButton.IsEnabled = enabled && _lastResult?.MixedPath is not null;
+        CreateNotesButton.IsEnabled = enabled && _lastResult?.TranscriptPath is not null && File.Exists(_lastResult.TranscriptPath);
         OpenFolderButton.IsEnabled = _lastResult is not null && Directory.Exists(_lastResult.SessionDirectory);
         OpenRecordingButton.IsEnabled = enabled && _lastResult?.MixedPath is not null && File.Exists(_lastResult.MixedPath);
         OpenTranscriptButton.IsEnabled = enabled && _lastResult?.TranscriptPath is not null && File.Exists(_lastResult.TranscriptPath);
@@ -375,15 +423,15 @@ public partial class MainWindow : Window
         }
         else
         {
-            SetLibraryButtons(false, false, false, false, false);
+            SetLibraryButtons(false, false, false, false, false, false);
         }
     }
 
     private void ClearReviewNotes()
     {
         TranscriptStateText.Text = "Ready";
-        TranscriptBox.Text = "Record audio, then create notes.";
-        MinutesBox.Text = "Record audio, then create notes.";
+        TranscriptBox.Text = "Record audio, then create a transcript.";
+        MinutesBox.Text = "Create a transcript, then create notes.";
     }
 
     private void RefreshLibrary(string? preferredDirectory = null)
@@ -409,7 +457,7 @@ public partial class MainWindow : Window
             LibraryDetailsText.Text = $"ADsum will list saved meetings from {_library.RootDirectory}.";
             LibraryMinutesBox.Text = "No meeting selected.";
             LibraryTranscriptBox.Text = "No meeting selected.";
-            SetLibraryButtons(false, false, false, false, false);
+            SetLibraryButtons(false, false, false, false, false, false);
             return;
         }
 
@@ -424,16 +472,18 @@ public partial class MainWindow : Window
             Directory.Exists(item.DirectoryPath),
             item.RecordingPath is not null && File.Exists(item.RecordingPath),
             item.RecordingPath is not null && File.Exists(item.RecordingPath),
+            item.TranscriptPath is not null && File.Exists(item.TranscriptPath),
             item.MinutesPath is not null && File.Exists(item.MinutesPath),
             item.TranscriptPath is not null && File.Exists(item.TranscriptPath));
     }
 
     private MeetingLibraryItem? SelectedLibraryMeeting() => (MeetingLibraryItem?)LibraryList.SelectedItem;
 
-    private void SetLibraryButtons(bool folder, bool recording, bool createNotes, bool minutes, bool transcript)
+    private void SetLibraryButtons(bool folder, bool recording, bool transcribe, bool createNotes, bool minutes, bool transcript)
     {
         LibraryOpenFolderButton.IsEnabled = !_isBusy && folder;
         LibraryOpenRecordingButton.IsEnabled = !_isBusy && recording;
+        LibraryTranscribeButton.IsEnabled = !_isBusy && transcribe;
         LibraryCreateNotesButton.IsEnabled = !_isBusy && createNotes;
         LibraryOpenMinutesButton.IsEnabled = !_isBusy && minutes;
         LibraryOpenTranscriptButton.IsEnabled = !_isBusy && transcript;
@@ -456,14 +506,25 @@ public partial class MainWindow : Window
         }
     }
 
-    private static RecordingResult RecordingResultFromLibraryItem(MeetingLibraryItem item)
+    private static RecordingResult RecordingResultFromLibraryItem(MeetingLibraryItem item, bool requireRecording = true)
     {
-        if (item.RecordingPath is null || !File.Exists(item.RecordingPath))
+        TrackMetrics mixedMetrics;
+        string? mixedPath;
+        if (item.RecordingPath is not null && File.Exists(item.RecordingPath))
+        {
+            mixedPath = item.RecordingPath;
+            mixedMetrics = MeetingRecorder.MeasureWaveFile(item.RecordingPath);
+        }
+        else if (requireRecording)
         {
             throw new FileNotFoundException("Saved recording was not found.", item.RecordingPath);
         }
+        else
+        {
+            mixedPath = null;
+            mixedMetrics = new TrackMetrics(null, TimeSpan.Zero, 0, 0);
+        }
 
-        var mixedMetrics = MeetingRecorder.MeasureWaveFile(item.RecordingPath);
         return new RecordingResult(
             item.Topic,
             item.DirectoryPath,
@@ -471,7 +532,7 @@ public partial class MainWindow : Window
             mixedMetrics.Duration,
             null,
             null,
-            item.RecordingPath,
+            mixedPath,
             item.TranscriptPath,
             item.MinutesPath,
             new TrackMetrics(null, TimeSpan.Zero, 0, 0),

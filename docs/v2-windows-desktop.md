@@ -25,10 +25,10 @@ Meetings are saved under `%LOCALAPPDATA%\ADsum\Recordings\<yyyyMMdd-HHmm-topic>`
 Each meeting folder contains:
 
 - `recording.wav`
-- `transcription.md`
-- `meeting-minutes.md`
+- `transcription-<topic>.md`
+- `notes-<topic>.md`
 
-Use the **Library** tab to browse previous meetings, preview saved minutes/transcripts, open the recording or folder directly, and create notes for an older recording if a previous run was interrupted.
+Use the **Library** tab to browse previous meetings, preview saved minutes/transcripts, open the recording or folder directly, create a transcript for an older recording, and create notes from an existing transcript.
 
 ## Manual recording test
 
@@ -39,6 +39,7 @@ Use the **Library** tab to browse previous meetings, preview saved minutes/trans
 5. Click **Test 6 s**.
 6. While the test runs, speak into the microphone and confirm you hear the test tone normally.
 7. Check the **Last Recording** panel. `Recording` should show non-zero peak/RMS values.
-8. Click **Create notes** and confirm `transcription.md` and `meeting-minutes.md` are created in the meeting folder.
+8. Click **Create transcript** and confirm `transcription-<topic>.md` is created in the meeting folder.
+9. Click **Create notes** and confirm `notes-<topic>.md` is created in the meeting folder.
 
 For a real online meeting, start playback in Teams/Meet/Zoom first, then click **Record**. ADsum records the selected microphone and WASAPI loopback from the selected output device without taking exclusive control of playback.

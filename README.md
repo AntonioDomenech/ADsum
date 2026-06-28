@@ -27,10 +27,10 @@ The build creates `dist\ADsum-windows-dotnet.zip`, a self-contained Windows bund
 Each meeting is stored under `%LOCALAPPDATA%\ADsum\Recordings` in a folder named `yyyyMMdd-HHmm-topic`. The final `recording.wav` is mixed from microphone and system audio with bounded level balancing so quieter room speech is less likely to be masked by louder computer audio. The folder contains:
 
 - `recording.wav`
-- `transcription.md`
-- `meeting-minutes.md`
+- `transcription-<topic>.md`
+- `notes-<topic>.md`
 
-The desktop app also includes a **Library** tab for browsing previous meetings, previewing saved minutes/transcripts, opening the recording or folder directly, and creating notes for an older recording if a previous run was interrupted.
+The desktop app also includes a **Library** tab for browsing previous meetings, previewing saved minutes/transcripts, opening the recording or folder directly, creating a transcript for an older recording, and creating notes from an existing transcript.
 
 ## Features
 
