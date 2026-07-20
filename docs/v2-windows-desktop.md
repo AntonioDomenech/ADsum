@@ -20,15 +20,19 @@ dotnet run --project .\src\ADsum.Desktop\ADsum.Desktop.csproj
 
 The .NET build script creates `dist\ADsum-windows-dotnet.zip`, a self-contained Windows bundle that can be attached to a GitHub Release. People downloading that ZIP do not need to install the .NET runtime.
 
-Meetings are saved under `%LOCALAPPDATA%\ADsum\Recordings\<yyyyMMdd-HHmm-topic>`. The app also shows the exact folder in the **Last Recording** panel after every recording. The final `recording.wav` is mixed from microphone and system audio with bounded level balancing so quieter room speech is less likely to be masked by louder computer audio.
+Meetings are saved under `%LOCALAPPDATA%\ADsum\Recordings\<yyyyMMdd-HHmm-topic>`. The app also shows the exact folder in the **Last Recording** panel after every recording. The final topic-named recording is mixed from microphone and system audio with bounded level balancing so quieter room speech is less likely to be masked by louder computer audio.
+
+The meeting-topic field is optional. When an unnamed recording is transcribed, ADsum generates a concise title from the transcript, renames the recording folder to `<yyyyMMdd-HHmm-topic>`, and gives both the audio and transcript matching topic filenames. Manually entered topics are preserved and applied to the files when the transcript is created. Existing `recording.wav` files remain supported. If the naming request is unavailable, a local transcript-keyword fallback prevents the recording from remaining `Untitled meeting`.
 
 Each meeting folder contains:
 
-- `recording.wav`
+- `recording-<topic>.wav`
 - `transcription-<topic>.md`
 - `notes-<topic>.md`
 
 Use the **Library** tab to browse previous meetings, preview saved minutes/transcripts, open the recording or folder directly, create a transcript for an older recording, and create notes from an existing transcript.
+
+Transcription and note generation run in the background without disabling the recording controls or the rest of the Library. Select another saved meeting to start an additional job while earlier jobs continue. Only one write job can run for a particular meeting at a time; this protects that meeting's transcript, notes, and folder from conflicting updates. The window status badge reports the active job count, and the selected meeting displays its current processing step.
 
 ## Manual recording test
 
@@ -39,7 +43,7 @@ Use the **Library** tab to browse previous meetings, preview saved minutes/trans
 5. Click **Test 6 s**.
 6. While the test runs, speak into the microphone and confirm you hear the test tone normally.
 7. Check the **Last Recording** panel. `Recording` should show non-zero peak/RMS values.
-8. Click **Create transcript** and confirm `transcription-<topic>.md` is created in the meeting folder.
+8. Leave the meeting topic blank, click **Create transcript**, and confirm the Library entry and recording folder receive a transcript-related topic name and both `recording-<topic>.wav` and `transcription-<topic>.md` are created inside it.
 9. Click **Create notes** and confirm `notes-<topic>.md` is created in the meeting folder.
 
 For a real online meeting, start playback in Teams/Meet/Zoom first, then click **Record**. ADsum records the selected microphone and WASAPI loopback from the selected output device without taking exclusive control of playback.

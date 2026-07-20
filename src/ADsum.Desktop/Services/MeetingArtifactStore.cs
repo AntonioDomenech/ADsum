@@ -10,8 +10,15 @@ public static class MeetingArtifactStore
     public const string LegacyMinutesFileName = "meeting-minutes.md";
     private const int MaxSlugLength = 80;
 
-    public static RecordingResult SaveTranscript(RecordingResult result, string transcript)
+    public static RecordingResult SaveTranscript(RecordingResult result, string transcript, string? generatedTopic = null)
     {
+        if (!string.IsNullOrWhiteSpace(generatedTopic))
+        {
+            result = MoveToTopicDirectory(result, generatedTopic.Trim());
+        }
+
+        result = RenameRecordingForTopic(result);
+        result = RenameTranscriptForTopic(result);
         Directory.CreateDirectory(result.SessionDirectory);
         var path = Path.Combine(result.SessionDirectory, TranscriptFileNameForTopic(result.Name));
         File.WriteAllText(path, BuildTranscriptMarkdown(result, transcript), Encoding.UTF8);
@@ -20,8 +27,11 @@ public static class MeetingArtifactStore
 
     public static RecordingResult SaveMinutes(RecordingResult result, string minutesMarkdown)
     {
-        var topic = ExtractMarkdownTitle(minutesMarkdown) ?? result.Name;
+        var topic = NeedsGeneratedTopic(result.Name)
+            ? ExtractMarkdownTitle(minutesMarkdown) ?? result.Name
+            : result.Name;
         result = MoveToTopicDirectory(result, topic);
+        result = RenameRecordingForTopic(result);
         result = RenameTranscriptForTopic(result);
         var path = Path.Combine(result.SessionDirectory, NotesFileNameForTopic(result.Name));
         File.WriteAllText(path, minutesMarkdown.Trim() + Environment.NewLine, Encoding.UTF8);
@@ -31,6 +41,12 @@ public static class MeetingArtifactStore
     public static string TranscriptFileNameForTopic(string topic) => $"transcription-{SlugOrUntitled(topic)}.md";
 
     public static string NotesFileNameForTopic(string topic) => $"notes-{SlugOrUntitled(topic)}.md";
+
+    public static string RecordingFileNameForTopic(string topic) => $"recording-{SlugOrUntitled(topic)}.wav";
+
+    public static bool NeedsGeneratedTopic(string? topic) =>
+        string.IsNullOrWhiteSpace(topic) ||
+        Slugify(topic).Equals("untitled-meeting", StringComparison.OrdinalIgnoreCase);
 
     public static string Slugify(string value)
     {
@@ -76,6 +92,42 @@ public static class MeetingArtifactStore
                 return candidate;
             }
         }
+    }
+
+    private static RecordingResult RenameRecordingForTopic(RecordingResult result)
+    {
+        if (string.IsNullOrWhiteSpace(result.MixedPath) || !File.Exists(result.MixedPath))
+        {
+            return result;
+        }
+
+        var target = Path.Combine(result.SessionDirectory, RecordingFileNameForTopic(result.Name));
+        if (SamePath(target, result.MixedPath))
+        {
+            return result;
+        }
+
+        if (!File.Exists(target))
+        {
+            try
+            {
+                File.Move(result.MixedPath, target);
+            }
+            catch (IOException)
+            {
+                return result;
+            }
+            catch (UnauthorizedAccessException)
+            {
+                return result;
+            }
+        }
+
+        return result with
+        {
+            MixedPath = target,
+            Mixed = result.Mixed with { Path = target }
+        };
     }
 
     private static RecordingResult RenameTranscriptForTopic(RecordingResult result)
@@ -156,9 +208,14 @@ public static class MeetingArtifactStore
         {
             Name = topic,
             SessionDirectory = target,
+            MicrophonePath = Repath(result.MicrophonePath, result.SessionDirectory, target),
+            SystemPath = Repath(result.SystemPath, result.SessionDirectory, target),
             MixedPath = Repath(result.MixedPath, result.SessionDirectory, target),
             TranscriptPath = Repath(result.TranscriptPath, result.SessionDirectory, target),
-            MinutesPath = Repath(result.MinutesPath, result.SessionDirectory, target)
+            MinutesPath = Repath(result.MinutesPath, result.SessionDirectory, target),
+            Microphone = Repath(result.Microphone, result.SessionDirectory, target),
+            System = Repath(result.System, result.SessionDirectory, target),
+            Mixed = Repath(result.Mixed, result.SessionDirectory, target)
         };
     }
 
@@ -200,6 +257,9 @@ public static class MeetingArtifactStore
         var relative = Path.GetRelativePath(oldRoot, path);
         return Path.Combine(newRoot, relative);
     }
+
+    private static TrackMetrics Repath(TrackMetrics metrics, string oldRoot, string newRoot) =>
+        metrics with { Path = Repath(metrics.Path, oldRoot, newRoot) };
 
     private static bool SamePath(string? first, string? second)
     {

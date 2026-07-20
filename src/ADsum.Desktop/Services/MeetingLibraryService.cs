@@ -33,7 +33,7 @@ public sealed partial class MeetingLibraryService
             directory,
             startedAt,
             info.LastWriteTime,
-            FirstExistingPath(directory, MeetingArtifactStore.RecordingFileName, "mixed.wav"),
+            FindRecordingPath(directory, topic),
             FindTranscriptPath(directory, topic),
             FindNotesPath(directory, topic));
     }
@@ -92,6 +92,14 @@ public sealed partial class MeetingLibraryService
             MeetingArtifactStore.TranscriptFileNameForTopic(topic),
             MeetingArtifactStore.LegacyTranscriptFileName)
         ?? FirstMatchingPath(directory, "transcription-*.md");
+
+    private static string? FindRecordingPath(string directory, string topic) =>
+        FirstExistingPath(
+            directory,
+            MeetingArtifactStore.RecordingFileNameForTopic(topic),
+            MeetingArtifactStore.RecordingFileName,
+            "mixed.wav")
+        ?? FirstMatchingPath(directory, "recording-*.wav");
 
     private static string? FindNotesPath(string directory, string topic) =>
         FirstExistingPath(

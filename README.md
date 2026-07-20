@@ -24,13 +24,17 @@ Build a Windows release artifact:
 
 The build creates `dist\ADsum-windows-dotnet.zip`, a self-contained Windows bundle that can be attached to a GitHub Release. People downloading that ZIP do not need to install the .NET runtime. See `docs/v2-windows-desktop.md` for the manual audio test checklist.
 
-Each meeting is stored under `%LOCALAPPDATA%\ADsum\Recordings` in a folder named `yyyyMMdd-HHmm-topic`. The final `recording.wav` is mixed from microphone and system audio with bounded level balancing so quieter room speech is less likely to be masked by louder computer audio. The folder contains:
+Each meeting is stored under `%LOCALAPPDATA%\ADsum\Recordings` in a folder named `yyyyMMdd-HHmm-topic`. The final topic-named recording is mixed from microphone and system audio with bounded level balancing so quieter room speech is less likely to be masked by louder computer audio. The folder contains:
 
-- `recording.wav`
+- `recording-<topic>.wav`
 - `transcription-<topic>.md`
 - `notes-<topic>.md`
 
+The meeting-topic field is optional. After ADsum transcribes an unnamed meeting, it generates a short topic from the transcript, renames the timestamped recording folder, and gives both the audio and transcript matching topic filenames. A topic entered before recording is preserved and is applied to the files when the transcript is created. Existing meetings that still contain `recording.wav` remain supported. If the short OpenAI naming request is unavailable, ADsum derives a local keyword-based topic so the recording does not remain `Untitled meeting`.
+
 The desktop app also includes a **Library** tab for browsing previous meetings, previewing saved minutes/transcripts, opening the recording or folder directly, creating a transcript for an older recording, and creating notes from an existing transcript.
+
+Transcription and note generation run as per-meeting background jobs. Recording controls and the meeting library remain available while those jobs run, and you can start jobs for several different recordings without waiting for the first one to finish. ADsum prevents overlapping write jobs for the same meeting so its transcript, notes, and folder cannot be changed by two operations at once. The status badge shows the number of active background jobs, and the selected Library meeting shows its current processing step.
 
 ## Features
 

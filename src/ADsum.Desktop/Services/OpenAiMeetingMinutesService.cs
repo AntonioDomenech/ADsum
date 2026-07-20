@@ -8,6 +8,7 @@ namespace ADsum.Desktop.Services;
 public sealed class OpenAiMeetingMinutesService
 {
     private const int MaxTranscriptCharactersPerRequest = 60000;
+    private const int MaxTopicTranscriptCharacters = 20000;
     private static readonly TimeSpan RequestTimeout = TimeSpan.FromMinutes(30);
     private static readonly HttpClient Client = new()
     {
@@ -37,12 +38,39 @@ public sealed class OpenAiMeetingMinutesService
         }
 
         progress?.Report("Generating meeting minutes");
-        return await CreateMinutesRequestAsync(
+        return await CreateResponseAsync(
             BuildInstructions(),
             BuildInput(transcript),
             apiKey,
             model,
             cancellationToken);
+    }
+
+    public async Task<string> CreateTopicAsync(
+        string transcript,
+        string? apiKey,
+        string model,
+        IProgress<string>? progress = null,
+        CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(apiKey))
+        {
+            throw new InvalidOperationException("OpenAI key is not configured.");
+        }
+
+        if (string.IsNullOrWhiteSpace(transcript))
+        {
+            throw new InvalidOperationException("Generate a transcript before naming the meeting.");
+        }
+
+        progress?.Report("Naming meeting");
+        var response = await CreateResponseAsync(
+            BuildTopicInstructions(),
+            BuildTopicInput(TopicTranscriptExcerpt(transcript)),
+            apiKey,
+            model,
+            cancellationToken);
+        return NormalizeTopicTitle(response);
     }
 
     private static async Task<string> CreateHierarchicalMinutesAsync(
@@ -57,7 +85,7 @@ public sealed class OpenAiMeetingMinutesService
         for (var index = 0; index < chunks.Count; index++)
         {
             progress?.Report($"Summarizing transcript part {index + 1} of {chunks.Count}");
-            partials.Add(await CreateMinutesRequestAsync(
+            partials.Add(await CreateResponseAsync(
                 BuildPartialInstructions(),
                 BuildPartialInput(chunks[index], index + 1, chunks.Count),
                 apiKey,
@@ -66,7 +94,7 @@ public sealed class OpenAiMeetingMinutesService
         }
 
         progress?.Report("Combining meeting minutes");
-        return await CreateMinutesRequestAsync(
+        return await CreateResponseAsync(
             BuildInstructions(),
             BuildFinalInput(partials),
             apiKey,
@@ -74,7 +102,7 @@ public sealed class OpenAiMeetingMinutesService
             cancellationToken);
     }
 
-    private static async Task<string> CreateMinutesRequestAsync(
+    private static async Task<string> CreateResponseAsync(
         string instructions,
         string input,
         string apiKey,
@@ -102,7 +130,7 @@ public sealed class OpenAiMeetingMinutesService
         var text = ExtractOutputText(body);
         if (string.IsNullOrWhiteSpace(text))
         {
-            throw new InvalidOperationException("OpenAI returned an empty meeting-minutes response.");
+            throw new InvalidOperationException("OpenAI returned an empty response.");
         }
         return text.Trim();
     }
@@ -130,6 +158,73 @@ One concise paragraph describing what the meeting was about.
 ## Decisions
 - Bullet list of decisions. If none were made, write "- None identified."
 """;
+    }
+
+    private static string BuildTopicInstructions()
+    {
+        return """
+You name recorded meetings from their transcripts.
+Identify the main subject of the meeting and return only a specific, descriptive title of 3 to 8 words.
+Do not use Markdown, quotation marks, labels such as "Title:", or ending punctuation.
+Do not invent a subject that is not supported by the transcript.
+""";
+    }
+
+    private static string BuildTopicInput(string transcript)
+    {
+        return $"""
+Create a short meeting title for this transcript.
+
+Transcript:
+{transcript}
+""";
+    }
+
+    private static string TopicTranscriptExcerpt(string transcript)
+    {
+        if (transcript.Length <= MaxTopicTranscriptCharacters)
+        {
+            return transcript;
+        }
+
+        const int beginningCharacters = 14000;
+        var endingCharacters = MaxTopicTranscriptCharacters - beginningCharacters;
+        return transcript[..beginningCharacters] +
+            "\n\n[Middle of transcript omitted for naming]\n\n" +
+            transcript[^endingCharacters..];
+    }
+
+    private static string NormalizeTopicTitle(string response)
+    {
+        var title = response
+            .Split(new[] { "\r\n", "\n" }, StringSplitOptions.RemoveEmptyEntries)
+            .Select(line => line.Trim())
+            .FirstOrDefault(line => line.Length > 0)
+            ?? "";
+
+        foreach (var prefix in new[] { "Meeting topic:", "Meeting title:", "Topic:", "Title:" })
+        {
+            if (title.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+            {
+                title = title[prefix.Length..].Trim();
+                break;
+            }
+        }
+
+        title = title.Trim(' ', '\t', '"', '\'', '`', '*', '#');
+        title = title.TrimEnd('.', ',', ';', ':', '-', '\u2013', '\u2014');
+        var words = title.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
+        if (words.Length > 8)
+        {
+            title = string.Join(' ', words.Take(8));
+        }
+
+        if (string.IsNullOrWhiteSpace(title))
+        {
+            throw new InvalidOperationException("OpenAI did not return a usable meeting title.");
+        }
+
+        return title;
     }
 
     private static string BuildInput(string transcript)

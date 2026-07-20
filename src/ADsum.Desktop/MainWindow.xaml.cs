@@ -16,8 +16,9 @@ public partial class MainWindow : Window
     private readonly OpenAiMeetingMinutesService _minutes = new();
     private readonly MeetingLibraryService _library = new();
     private readonly DispatcherTimer _timer;
+    private readonly Dictionary<string, MeetingJob> _meetingJobs = new(StringComparer.OrdinalIgnoreCase);
     private RecordingResult? _lastResult;
-    private bool _isBusy;
+    private bool _isRecorderBusy;
 
     public MainWindow()
     {
@@ -35,6 +36,7 @@ public partial class MainWindow : Window
         KeyStateText.Text = _settings.HasOpenAiKey ? "OpenAI key configured" : "OpenAI key not configured";
         RefreshDevices();
         RefreshLibrary();
+        UpdateUiState();
     }
 
     private void RefreshDevices()
@@ -51,9 +53,11 @@ public partial class MainWindow : Window
 
     private async void TestButton_Click(object sender, RoutedEventArgs e)
     {
-        await RunBusyAsync(async () =>
+        await RunRecorderActionAsync(async () =>
         {
+            _lastResult = null;
             ClearReviewNotes();
+            RenderResult(null);
             ResultText.Text = "Running 6 second device test. Speak into the mic and confirm you hear the tone.";
             await _recorder.RunDeviceTestAsync(
                 SessionNameBox.Text,
@@ -67,21 +71,20 @@ public partial class MainWindow : Window
 
     private void RecordButton_Click(object sender, RoutedEventArgs e)
     {
+        if (_isRecorderBusy || _recorder.IsRecording)
+        {
+            return;
+        }
+
         try
         {
             _recorder.Start(SessionNameBox.Text, SelectedMicrophoneId(), SelectedOutputId());
             _lastResult = null;
             ClearReviewNotes();
+            RenderResult(null);
             ResultText.Text = "Recording...";
-            StateText.Text = "Recording";
-            StopButton.IsEnabled = true;
-            RecordButton.IsEnabled = false;
-            TestButton.IsEnabled = false;
-            RefreshButton.IsEnabled = false;
-            TranscribeButton.IsEnabled = false;
-            CreateNotesButton.IsEnabled = false;
-            OpenFolderButton.IsEnabled = false;
             _timer.Start();
+            UpdateUiState();
         }
         catch (Exception ex)
         {
@@ -95,16 +98,12 @@ public partial class MainWindow : Window
         {
             _lastResult = _recorder.Stop();
             _timer.Stop();
-            StateText.Text = "Idle";
-            StopButton.IsEnabled = false;
-            RecordButton.IsEnabled = true;
-            TestButton.IsEnabled = true;
-            RefreshButton.IsEnabled = true;
             MicLevelBar.Value = 0;
             SystemLevelBar.Value = 0;
             ElapsedText.Text = "00:00";
             RenderResult(_lastResult);
             RefreshLibrary(_lastResult.SessionDirectory);
+            UpdateUiState();
         }
         catch (Exception ex)
         {
@@ -114,49 +113,100 @@ public partial class MainWindow : Window
 
     private async void TranscribeButton_Click(object sender, RoutedEventArgs e)
     {
-        if (_lastResult?.MixedPath is null)
+        var source = _lastResult;
+        if (source?.MixedPath is not { } audioPath || !File.Exists(audioPath))
         {
             MessageBox.Show(this, "Record audio before transcribing.", "No audio", MessageBoxButton.OK, MessageBoxImage.Information);
             return;
         }
 
-        await RunBusyAsync(async () =>
-        {
-            TranscriptStateText.Text = "Diarizing";
-            TranscriptBox.Text = "Waiting for OpenAI speaker diarization...";
-            MinutesBox.Text = "Transcript is being created. Notes are separate.";
-            var transcriptProgress = new Progress<string>(message => TranscriptStateText.Text = message);
-            var transcript = await _transcription.TranscribeAsync(_lastResult.MixedPath, _settings.OpenAiKey, transcriptProgress);
-            TranscriptBox.Text = string.IsNullOrWhiteSpace(transcript) ? "(No text returned.)" : transcript.Trim();
-            _lastResult = MeetingArtifactStore.SaveTranscript(_lastResult, transcript);
-            RenderResult(_lastResult);
-            RefreshLibrary(_lastResult.SessionDirectory);
-            TranscriptStateText.Text = "Done";
-        });
+        var apiKey = _settings.OpenAiKey;
+        var notesModel = _settings.NotesModel;
+        string transcript = "";
+        string? generatedTopic = null;
+        var usedLocalTopicFallback = false;
+        await RunMeetingJobAsync(
+            source,
+            "Creating transcript",
+            onStarted: () =>
+            {
+                if (!IsDisplayedLastResult(source.SessionDirectory))
+                {
+                    return;
+                }
+
+                TranscriptBox.Text = "Waiting for OpenAI speaker diarization...";
+                MinutesBox.Text = "Transcript is being created. Notes are separate.";
+            },
+            action: async progress =>
+            {
+                transcript = await _transcription.TranscribeAsync(audioPath, apiKey, progress);
+                if (MeetingArtifactStore.NeedsGeneratedTopic(source.Name))
+                {
+                    try
+                    {
+                        generatedTopic = await _minutes.CreateTopicAsync(transcript, apiKey, notesModel, progress);
+                    }
+                    catch
+                    {
+                        generatedTopic = MeetingTopicFallback.FromTranscript(transcript, source.StartedAt);
+                        usedLocalTopicFallback = true;
+                        progress.Report("Naming meeting locally");
+                    }
+                }
+            },
+            onSuccess: () =>
+            {
+                var result = MeetingArtifactStore.SaveTranscript(source, transcript, generatedTopic);
+                if (ReplaceLastResultIfMatching(source.SessionDirectory, result))
+                {
+                    TranscriptBox.Text = string.IsNullOrWhiteSpace(transcript) ? "(No text returned.)" : transcript.Trim();
+                    TranscriptStateText.Text = usedLocalTopicFallback ? "Done - named locally" : "Done";
+                }
+
+                RefreshLibraryAfterJob(source.SessionDirectory, result.SessionDirectory);
+            });
     }
 
     private async void CreateNotesButton_Click(object sender, RoutedEventArgs e)
     {
-        if (_lastResult?.TranscriptPath is null || !File.Exists(_lastResult.TranscriptPath))
+        var source = _lastResult;
+        if (source?.TranscriptPath is not { } transcriptPath || !File.Exists(transcriptPath))
         {
             MessageBox.Show(this, "Create a transcript before generating notes.", "No transcript", MessageBoxButton.OK, MessageBoxImage.Information);
             return;
         }
 
-        await RunBusyAsync(async () =>
-        {
-            TranscriptStateText.Text = "Writing notes";
-            MinutesBox.Text = "Generating meeting notes...";
-            var transcript = File.ReadAllText(_lastResult.TranscriptPath);
-            var minutesProgress = new Progress<string>(message => TranscriptStateText.Text = message);
-            var minutes = await _minutes.CreateMinutesAsync(transcript, _settings.OpenAiKey, _settings.NotesModel, minutesProgress);
-            _lastResult = MeetingArtifactStore.SaveMinutes(_lastResult, minutes);
-            MinutesBox.Text = minutes.Trim();
-            TranscriptBox.Text = ReadTextPreview(_lastResult.TranscriptPath, "No transcript saved for this meeting.");
-            RenderResult(_lastResult);
-            RefreshLibrary(_lastResult.SessionDirectory);
-            TranscriptStateText.Text = "Done";
-        });
+        var apiKey = _settings.OpenAiKey;
+        var notesModel = _settings.NotesModel;
+        string minutes = "";
+        await RunMeetingJobAsync(
+            source,
+            "Creating notes",
+            onStarted: () =>
+            {
+                if (IsDisplayedLastResult(source.SessionDirectory))
+                {
+                    MinutesBox.Text = "Generating meeting notes...";
+                }
+            },
+            action: async progress =>
+            {
+                var transcript = File.ReadAllText(transcriptPath);
+                minutes = await _minutes.CreateMinutesAsync(transcript, apiKey, notesModel, progress);
+            },
+            onSuccess: () =>
+            {
+                var result = MeetingArtifactStore.SaveMinutes(source, minutes);
+                if (ReplaceLastResultIfMatching(source.SessionDirectory, result))
+                {
+                    MinutesBox.Text = minutes.Trim();
+                    TranscriptBox.Text = ReadTextPreview(result.TranscriptPath, "No transcript saved for this meeting.");
+                    TranscriptStateText.Text = "Done";
+                }
+
+                RefreshLibraryAfterJob(source.SessionDirectory, result.SessionDirectory);
+            });
     }
 
     private void SaveKeyButton_Click(object sender, RoutedEventArgs e)
@@ -248,25 +298,52 @@ public partial class MainWindow : Window
             return;
         }
 
-        var refreshDirectory = item.DirectoryPath;
-        await RunBusyAsync(async () =>
-        {
-            SetLibraryButtons(false, false, false, false, false, false);
-            LibraryTranscriptBox.Text = "Waiting for OpenAI speaker diarization...";
-            LibraryMinutesBox.Text = "Transcript is being created. Notes are separate.";
+        var source = RecordingResultFromLibraryItem(item);
+        var audioPath = source.MixedPath!;
+        var apiKey = _settings.OpenAiKey;
+        var notesModel = _settings.NotesModel;
+        string transcript = "";
+        string? generatedTopic = null;
+        await RunMeetingJobAsync(
+            source,
+            "Creating transcript",
+            onStarted: () =>
+            {
+                if (!IsSelectedLibraryMeeting(source.SessionDirectory))
+                {
+                    return;
+                }
 
-            var result = RecordingResultFromLibraryItem(item);
-            var transcriptProgress = new Progress<string>(message => LibraryDetailsText.Text = BuildLibraryProcessingText(result, message));
-            var transcript = await _transcription.TranscribeAsync(result.MixedPath!, _settings.OpenAiKey, transcriptProgress);
-            result = MeetingArtifactStore.SaveTranscript(result, transcript);
-            LibraryTranscriptBox.Text = string.IsNullOrWhiteSpace(transcript) ? "(No text returned.)" : transcript.Trim();
+                LibraryTranscriptBox.Text = "Waiting for OpenAI speaker diarization...";
+                LibraryMinutesBox.Text = "Transcript is being created. Notes are separate.";
+            },
+            action: async progress =>
+            {
+                transcript = await _transcription.TranscribeAsync(audioPath, apiKey, progress);
+                if (MeetingArtifactStore.NeedsGeneratedTopic(source.Name))
+                {
+                    try
+                    {
+                        generatedTopic = await _minutes.CreateTopicAsync(transcript, apiKey, notesModel, progress);
+                    }
+                    catch
+                    {
+                        generatedTopic = MeetingTopicFallback.FromTranscript(transcript, source.StartedAt);
+                        progress.Report("Naming meeting locally");
+                    }
+                }
+            },
+            onSuccess: () =>
+            {
+                var result = MeetingArtifactStore.SaveTranscript(source, transcript, generatedTopic);
+                if (IsSelectedLibraryMeeting(source.SessionDirectory))
+                {
+                    LibraryTranscriptBox.Text = string.IsNullOrWhiteSpace(transcript) ? "(No text returned.)" : transcript.Trim();
+                }
 
-            _lastResult = result;
-            RenderResult(_lastResult);
-            refreshDirectory = result.SessionDirectory;
-            LibraryDetailsText.Text = BuildLibraryProcessingText(result, "Done");
-        });
-        RefreshLibrary(refreshDirectory);
+                ReplaceLastResultIfMatching(source.SessionDirectory, result);
+                RefreshLibraryAfterJob(source.SessionDirectory, result.SessionDirectory);
+            });
     }
 
     private async void LibraryCreateNotesButton_Click(object sender, RoutedEventArgs e)
@@ -278,26 +355,38 @@ public partial class MainWindow : Window
             return;
         }
 
-        var refreshDirectory = item.DirectoryPath;
-        await RunBusyAsync(async () =>
-        {
-            SetLibraryButtons(false, false, false, false, false, false);
-            LibraryMinutesBox.Text = "Generating meeting notes...";
+        var source = RecordingResultFromLibraryItem(item, requireRecording: false);
+        var transcriptPath = source.TranscriptPath!;
+        var apiKey = _settings.OpenAiKey;
+        var notesModel = _settings.NotesModel;
+        string minutes = "";
+        await RunMeetingJobAsync(
+            source,
+            "Creating notes",
+            onStarted: () =>
+            {
+                if (IsSelectedLibraryMeeting(source.SessionDirectory))
+                {
+                    LibraryMinutesBox.Text = "Generating meeting notes...";
+                }
+            },
+            action: async progress =>
+            {
+                var transcript = File.ReadAllText(transcriptPath);
+                minutes = await _minutes.CreateMinutesAsync(transcript, apiKey, notesModel, progress);
+            },
+            onSuccess: () =>
+            {
+                var result = MeetingArtifactStore.SaveMinutes(source, minutes);
+                if (IsSelectedLibraryMeeting(source.SessionDirectory))
+                {
+                    LibraryMinutesBox.Text = minutes.Trim();
+                    LibraryTranscriptBox.Text = ReadTextPreview(result.TranscriptPath, "No transcript saved for this meeting.");
+                }
 
-            var result = RecordingResultFromLibraryItem(item, requireRecording: false);
-            var transcript = File.ReadAllText(result.TranscriptPath!);
-            var minutesProgress = new Progress<string>(message => LibraryDetailsText.Text = BuildLibraryProcessingText(result, message));
-            var minutes = await _minutes.CreateMinutesAsync(transcript, _settings.OpenAiKey, _settings.NotesModel, minutesProgress);
-            result = MeetingArtifactStore.SaveMinutes(result, minutes);
-            LibraryMinutesBox.Text = minutes.Trim();
-            LibraryTranscriptBox.Text = ReadTextPreview(result.TranscriptPath, "No transcript saved for this meeting.");
-
-            _lastResult = result;
-            RenderResult(_lastResult);
-            refreshDirectory = result.SessionDirectory;
-            LibraryDetailsText.Text = BuildLibraryProcessingText(result, "Done");
-        });
-        RefreshLibrary(refreshDirectory);
+                ReplaceLastResultIfMatching(source.SessionDirectory, result);
+                RefreshLibraryAfterJob(source.SessionDirectory, result.SessionDirectory);
+            });
     }
 
     private void LibraryOpenMinutesButton_Click(object sender, RoutedEventArgs e)
@@ -332,12 +421,7 @@ public partial class MainWindow : Window
         if (result is null)
         {
             ResultText.Text = "No recording yet.";
-            TranscribeButton.IsEnabled = false;
-            CreateNotesButton.IsEnabled = false;
-            OpenFolderButton.IsEnabled = false;
-            OpenRecordingButton.IsEnabled = false;
-            OpenTranscriptButton.IsEnabled = false;
-            OpenMinutesButton.IsEnabled = false;
+            UpdateLastRecordingButtons();
             return;
         }
 
@@ -348,12 +432,7 @@ public partial class MainWindow : Window
             $"Transcript: {SavedState(result.TranscriptPath)}\n" +
             $"Minutes: {SavedState(result.MinutesPath)}\n\n" +
             $"Folder: {result.SessionDirectory}";
-        TranscribeButton.IsEnabled = !_isBusy && result.MixedPath is not null && File.Exists(result.MixedPath);
-        CreateNotesButton.IsEnabled = !_isBusy && result.TranscriptPath is not null && File.Exists(result.TranscriptPath);
-        OpenFolderButton.IsEnabled = !_isBusy && Directory.Exists(result.SessionDirectory);
-        OpenRecordingButton.IsEnabled = !_isBusy && result.MixedPath is not null && File.Exists(result.MixedPath);
-        OpenTranscriptButton.IsEnabled = !_isBusy && result.TranscriptPath is not null && File.Exists(result.TranscriptPath);
-        OpenMinutesButton.IsEnabled = !_isBusy && result.MinutesPath is not null && File.Exists(result.MinutesPath);
+        UpdateLastRecordingButtons();
     }
 
     private static string FormatMetrics(TrackMetrics metrics)
@@ -377,15 +456,15 @@ public partial class MainWindow : Window
         OutputWarningText.Text = ((AudioDeviceInfo?)OutputCombo.SelectedItem)?.Warning ?? "";
     }
 
-    private async Task RunBusyAsync(Func<Task> action)
+    private async Task RunRecorderActionAsync(Func<Task> action)
     {
-        if (_isBusy)
+        if (_isRecorderBusy || _recorder.IsRecording)
         {
             return;
         }
 
-        _isBusy = true;
-        ToggleButtons(false);
+        _isRecorderBusy = true;
+        UpdateUiState();
         try
         {
             await action();
@@ -393,37 +472,117 @@ public partial class MainWindow : Window
         catch (Exception ex)
         {
             MessageBox.Show(this, ex.Message, "ADsum", MessageBoxButton.OK, MessageBoxImage.Error);
-            TranscriptStateText.Text = "Ready";
         }
         finally
         {
-            _isBusy = false;
-            ToggleButtons(!_recorder.IsRecording);
-            StopButton.IsEnabled = _recorder.IsRecording;
+            _isRecorderBusy = false;
+            UpdateUiState();
         }
     }
 
-    private void ToggleButtons(bool enabled)
+    private async Task RunMeetingJobAsync(
+        RecordingResult source,
+        string operation,
+        Action onStarted,
+        Func<IProgress<string>, Task> action,
+        Action onSuccess)
     {
-        RefreshButton.IsEnabled = enabled;
-        TestButton.IsEnabled = enabled;
-        RecordButton.IsEnabled = enabled;
-        SaveKeyButton.IsEnabled = enabled;
-        TranscribeButton.IsEnabled = enabled && _lastResult?.MixedPath is not null;
-        CreateNotesButton.IsEnabled = enabled && _lastResult?.TranscriptPath is not null && File.Exists(_lastResult.TranscriptPath);
-        OpenFolderButton.IsEnabled = _lastResult is not null && Directory.Exists(_lastResult.SessionDirectory);
-        OpenRecordingButton.IsEnabled = enabled && _lastResult?.MixedPath is not null && File.Exists(_lastResult.MixedPath);
-        OpenTranscriptButton.IsEnabled = enabled && _lastResult?.TranscriptPath is not null && File.Exists(_lastResult.TranscriptPath);
-        OpenMinutesButton.IsEnabled = enabled && _lastResult?.MinutesPath is not null && File.Exists(_lastResult.MinutesPath);
-        LibraryRefreshButton.IsEnabled = enabled;
-        LibraryList.IsEnabled = enabled;
-        if (enabled)
+        var key = NormalizedPath(source.SessionDirectory);
+        if (_meetingJobs.TryGetValue(key, out var existingJob))
         {
-            RenderLibrarySelection(SelectedLibraryMeeting());
+            MessageBox.Show(
+                this,
+                $"This meeting is already busy: {existingJob.Operation}. You can start work on a different recording while it finishes.",
+                "Meeting already processing",
+                MessageBoxButton.OK,
+                MessageBoxImage.Information);
+            return;
         }
-        else
+
+        var job = new MeetingJob(operation, "Starting");
+        _meetingJobs.Add(key, job);
+
+        try
         {
-            SetLibraryButtons(false, false, false, false, false, false);
+            onStarted();
+            UpdateUiState();
+            var progress = new Progress<string>(message =>
+            {
+                job.Status = message;
+                UpdateUiState();
+            });
+            await Task.Run(() => action(progress));
+            job.Status = "Done";
+            UpdateUiState();
+            onSuccess();
+        }
+        catch (Exception ex)
+        {
+            job.Status = "Failed";
+            UpdateUiState();
+            if (IsDisplayedLastResult(source.SessionDirectory))
+            {
+                TranscriptStateText.Text = "Failed";
+            }
+            MessageBox.Show(this, ex.Message, $"ADsum - {operation}", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+        finally
+        {
+            _meetingJobs.Remove(key);
+            UpdateUiState();
+        }
+    }
+
+    private void UpdateUiState()
+    {
+        UpdateHeaderState();
+
+        var recorderControlsEnabled = !_isRecorderBusy && !_recorder.IsRecording;
+        RefreshButton.IsEnabled = recorderControlsEnabled;
+        TestButton.IsEnabled = recorderControlsEnabled;
+        RecordButton.IsEnabled = recorderControlsEnabled;
+        StopButton.IsEnabled = _recorder.IsRecording;
+        SaveKeyButton.IsEnabled = true;
+        LibraryRefreshButton.IsEnabled = true;
+        LibraryList.IsEnabled = true;
+
+        UpdateLastRecordingButtons();
+        UpdateVisibleLastJobStatus();
+        UpdateLibrarySelectionState(SelectedLibraryMeeting());
+    }
+
+    private void UpdateHeaderState()
+    {
+        var recorderState = _recorder.IsRecording
+            ? "Recording"
+            : _isRecorderBusy
+                ? "Testing devices"
+                : "Idle";
+        StateText.Text = _meetingJobs.Count switch
+        {
+            0 => recorderState,
+            1 => $"{recorderState} - 1 background job",
+            _ => $"{recorderState} - {_meetingJobs.Count} background jobs"
+        };
+    }
+
+    private void UpdateLastRecordingButtons()
+    {
+        var result = _lastResult;
+        var meetingIsBusy = result is not null && IsMeetingJobActive(result.SessionDirectory);
+        TranscribeButton.IsEnabled = !meetingIsBusy && result?.MixedPath is not null && File.Exists(result.MixedPath);
+        CreateNotesButton.IsEnabled = !meetingIsBusy && result?.TranscriptPath is not null && File.Exists(result.TranscriptPath);
+        OpenFolderButton.IsEnabled = !meetingIsBusy && result is not null && Directory.Exists(result.SessionDirectory);
+        OpenRecordingButton.IsEnabled = !meetingIsBusy && result?.MixedPath is not null && File.Exists(result.MixedPath);
+        OpenTranscriptButton.IsEnabled = !meetingIsBusy && result?.TranscriptPath is not null && File.Exists(result.TranscriptPath);
+        OpenMinutesButton.IsEnabled = !meetingIsBusy && result?.MinutesPath is not null && File.Exists(result.MinutesPath);
+    }
+
+    private void UpdateVisibleLastJobStatus()
+    {
+        if (_lastResult is not null && TryGetMeetingJob(_lastResult.SessionDirectory, out var job))
+        {
+            TranscriptStateText.Text = $"{job.Operation}: {job.Status}";
         }
     }
 
@@ -462,32 +621,91 @@ public partial class MainWindow : Window
         }
 
         LibraryTitleText.Text = item.Topic;
-        LibraryDetailsText.Text =
+        LibraryMinutesBox.Text = ReadTextPreview(item.MinutesPath, "No meeting minutes saved for this meeting.");
+        LibraryTranscriptBox.Text = ReadTextPreview(item.TranscriptPath, "No transcript saved for this meeting.");
+        UpdateLibrarySelectionState(item);
+    }
+
+    private void UpdateLibrarySelectionState(MeetingLibraryItem? item)
+    {
+        if (item is null)
+        {
+            SetLibraryButtons(false, false, false, false, false, false);
+            return;
+        }
+
+        var meetingIsBusy = IsMeetingJobActive(item.DirectoryPath);
+        RenderLibraryDetails(item);
+        SetLibraryButtons(
+            !meetingIsBusy && Directory.Exists(item.DirectoryPath),
+            !meetingIsBusy && item.RecordingPath is not null && File.Exists(item.RecordingPath),
+            !meetingIsBusy && item.RecordingPath is not null && File.Exists(item.RecordingPath),
+            !meetingIsBusy && item.TranscriptPath is not null && File.Exists(item.TranscriptPath),
+            !meetingIsBusy && item.MinutesPath is not null && File.Exists(item.MinutesPath),
+            !meetingIsBusy && item.TranscriptPath is not null && File.Exists(item.TranscriptPath));
+    }
+
+    private void RenderLibraryDetails(MeetingLibraryItem item)
+    {
+        var details =
             $"{item.DateText}\n" +
             $"{item.FileSummary}\n" +
             $"{item.DirectoryPath}";
-        LibraryMinutesBox.Text = ReadTextPreview(item.MinutesPath, "No meeting minutes saved for this meeting.");
-        LibraryTranscriptBox.Text = ReadTextPreview(item.TranscriptPath, "No transcript saved for this meeting.");
-        SetLibraryButtons(
-            Directory.Exists(item.DirectoryPath),
-            item.RecordingPath is not null && File.Exists(item.RecordingPath),
-            item.RecordingPath is not null && File.Exists(item.RecordingPath),
-            item.TranscriptPath is not null && File.Exists(item.TranscriptPath),
-            item.MinutesPath is not null && File.Exists(item.MinutesPath),
-            item.TranscriptPath is not null && File.Exists(item.TranscriptPath));
+        if (TryGetMeetingJob(item.DirectoryPath, out var job))
+        {
+            details += $"\n\n{job.Operation}: {job.Status}";
+        }
+
+        LibraryDetailsText.Text = details;
     }
 
     private MeetingLibraryItem? SelectedLibraryMeeting() => (MeetingLibraryItem?)LibraryList.SelectedItem;
 
     private void SetLibraryButtons(bool folder, bool recording, bool transcribe, bool createNotes, bool minutes, bool transcript)
     {
-        LibraryOpenFolderButton.IsEnabled = !_isBusy && folder;
-        LibraryOpenRecordingButton.IsEnabled = !_isBusy && recording;
-        LibraryTranscribeButton.IsEnabled = !_isBusy && transcribe;
-        LibraryCreateNotesButton.IsEnabled = !_isBusy && createNotes;
-        LibraryOpenMinutesButton.IsEnabled = !_isBusy && minutes;
-        LibraryOpenTranscriptButton.IsEnabled = !_isBusy && transcript;
+        LibraryOpenFolderButton.IsEnabled = folder;
+        LibraryOpenRecordingButton.IsEnabled = recording;
+        LibraryTranscribeButton.IsEnabled = transcribe;
+        LibraryCreateNotesButton.IsEnabled = createNotes;
+        LibraryOpenMinutesButton.IsEnabled = minutes;
+        LibraryOpenTranscriptButton.IsEnabled = transcript;
     }
+
+    private bool ReplaceLastResultIfMatching(string originalDirectory, RecordingResult result)
+    {
+        if (!IsDisplayedLastResult(originalDirectory))
+        {
+            return false;
+        }
+
+        _lastResult = result;
+        RenderResult(result);
+        return true;
+    }
+
+    private void RefreshLibraryAfterJob(string originalDirectory, string completedDirectory)
+    {
+        var selectedDirectory = SelectedLibraryMeeting()?.DirectoryPath;
+        var preferredDirectory = string.IsNullOrWhiteSpace(selectedDirectory) || SamePath(selectedDirectory, originalDirectory)
+            ? completedDirectory
+            : selectedDirectory;
+        RefreshLibrary(preferredDirectory);
+    }
+
+    private bool IsDisplayedLastResult(string directory) =>
+        _lastResult is not null && SamePath(_lastResult.SessionDirectory, directory);
+
+    private bool IsSelectedLibraryMeeting(string directory) =>
+        SamePath(SelectedLibraryMeeting()?.DirectoryPath, directory);
+
+    private bool IsMeetingJobActive(string directory) =>
+        _meetingJobs.ContainsKey(NormalizedPath(directory));
+
+    private bool TryGetMeetingJob(string directory, out MeetingJob job) =>
+        _meetingJobs.TryGetValue(NormalizedPath(directory), out job!);
+
+    private static string NormalizedPath(string path) =>
+        Path.GetFullPath(path).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
 
     private static string ReadTextPreview(string? path, string missingText)
     {
@@ -540,15 +758,6 @@ public partial class MainWindow : Window
             mixedMetrics);
     }
 
-    private static string BuildLibraryProcessingText(RecordingResult result, string state)
-    {
-        return
-            $"{result.StartedAt:yyyy-MM-dd HH:mm}\n" +
-            $"{FormatMetrics(result.Mixed)}\n" +
-            $"{result.SessionDirectory}\n\n" +
-            state;
-    }
-
     private static bool SamePath(string? first, string? second)
     {
         if (string.IsNullOrWhiteSpace(first) || string.IsNullOrWhiteSpace(second))
@@ -569,5 +778,12 @@ public partial class MainWindow : Window
             FileName = path,
             UseShellExecute = true
         });
+    }
+
+    private sealed class MeetingJob(string operation, string status)
+    {
+        public string Operation { get; } = operation;
+
+        public string Status { get; set; } = status;
     }
 }

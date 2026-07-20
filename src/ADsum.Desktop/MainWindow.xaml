@@ -31,8 +31,9 @@
 
             <Border Grid.Column="0" Style="{StaticResource Panel}">
                 <StackPanel>
-                    <TextBlock Text="Meeting topic" Foreground="{StaticResource MutedBrush}" FontWeight="SemiBold" />
-                    <TextBox x:Name="SessionNameBox" Margin="0,7,0,18" MinHeight="38" Padding="8" />
+                    <TextBlock Text="Meeting topic (optional)" Foreground="{StaticResource MutedBrush}" FontWeight="SemiBold" />
+                    <TextBox x:Name="SessionNameBox" Margin="0,7,0,18" MinHeight="38" Padding="8"
+                             ToolTip="Leave this blank and ADsum will name the meeting from its transcript." />
 
                     <TextBlock Text="Microphone" Foreground="{StaticResource MutedBrush}" FontWeight="SemiBold" />
                     <ComboBox x:Name="MicrophoneCombo" DisplayMemberPath="Name" SelectedValuePath="Id" Margin="0,7,0,4" MinHeight="38" />
