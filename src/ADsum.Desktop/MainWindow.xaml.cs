@@ -12,7 +12,8 @@ public partial class MainWindow : Window
     private readonly AudioDeviceService _devices = new();
     private readonly SettingsStore _settings = new();
     private readonly MeetingRecorder _recorder = new();
-    private readonly OpenAiTranscriptionService _transcription = new();
+    private readonly RecordingMossResourceCoordinator _recordingResources = RecordingMossResourceCoordinator.Shared;
+    private readonly MossTranscriptionService _transcription;
     private readonly OpenAiMeetingMinutesService _minutes = new();
     private readonly MeetingLibraryService _library = new();
     private readonly DispatcherTimer _timer;
@@ -22,6 +23,7 @@ public partial class MainWindow : Window
 
     public MainWindow()
     {
+        _transcription = new MossTranscriptionService(_recordingResources);
         InitializeComponent();
         _timer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(250) };
         _timer.Tick += Timer_Tick;
@@ -55,30 +57,49 @@ public partial class MainWindow : Window
     {
         await RunRecorderActionAsync(async () =>
         {
-            _lastResult = null;
-            ClearReviewNotes();
-            RenderResult(null);
-            ResultText.Text = "Running 6 second device test. Speak into the mic and confirm you hear the tone.";
-            await _recorder.RunDeviceTestAsync(
-                SessionNameBox.Text,
-                SelectedMicrophoneId(),
-                SelectedOutputId(),
-                TimeSpan.FromSeconds(6));
-            _lastResult = _recorder.LastResult;
-            RenderResult(_lastResult);
+            await _recordingResources.BeginRecordingAsync();
+            try
+            {
+                _lastResult = null;
+                ClearReviewNotes();
+                RenderResult(null);
+                ResultText.Text = "Running 6 second device test. Speak into the mic and confirm you hear the tone.";
+                await _recorder.RunDeviceTestAsync(
+                    SessionNameBox.Text,
+                    SelectedMicrophoneId(),
+                    SelectedOutputId(),
+                    TimeSpan.FromSeconds(6));
+                _lastResult = _recorder.LastResult;
+                RenderResult(_lastResult);
+            }
+            finally
+            {
+                _recordingResources.EndRecording();
+            }
         });
     }
 
-    private void RecordButton_Click(object sender, RoutedEventArgs e)
+    private async void RecordButton_Click(object sender, RoutedEventArgs e)
     {
         if (_isRecorderBusy || _recorder.IsRecording)
         {
             return;
         }
 
+        _isRecorderBusy = true;
+        UpdateUiState();
         try
         {
-            _recorder.Start(SessionNameBox.Text, SelectedMicrophoneId(), SelectedOutputId());
+            await _recordingResources.BeginRecordingAsync();
+            try
+            {
+                _recorder.Start(SessionNameBox.Text, SelectedMicrophoneId(), SelectedOutputId());
+            }
+            catch
+            {
+                _recordingResources.EndRecording();
+                throw;
+            }
             _lastResult = null;
             ClearReviewNotes();
             RenderResult(null);
@@ -89,6 +110,11 @@ public partial class MainWindow : Window
         catch (Exception ex)
         {
             MessageBox.Show(this, ex.Message, "Unable to start recording", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+        finally
+        {
+            _isRecorderBusy = false;
+            UpdateUiState();
         }
     }
 
@@ -108,6 +134,13 @@ public partial class MainWindow : Window
         catch (Exception ex)
         {
             MessageBox.Show(this, ex.Message, "Unable to stop recording", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+        finally
+        {
+            if (!_recorder.IsRecording)
+            {
+                _recordingResources.EndRecording();
+            }
         }
     }
 
@@ -135,12 +168,12 @@ public partial class MainWindow : Window
                     return;
                 }
 
-                TranscriptBox.Text = "Waiting for OpenAI speaker diarization...";
+                TranscriptBox.Text = "Preparing local MOSS transcription...";
                 MinutesBox.Text = "Transcript is being created. Notes are separate.";
             },
             action: async progress =>
             {
-                transcript = await _transcription.TranscribeAsync(audioPath, apiKey, progress);
+                transcript = await _transcription.TranscribeAsync(audioPath, progress);
                 if (MeetingArtifactStore.NeedsGeneratedTopic(source.Name))
                 {
                     try
@@ -314,12 +347,12 @@ public partial class MainWindow : Window
                     return;
                 }
 
-                LibraryTranscriptBox.Text = "Waiting for OpenAI speaker diarization...";
+                LibraryTranscriptBox.Text = "Preparing local MOSS transcription...";
                 LibraryMinutesBox.Text = "Transcript is being created. Notes are separate.";
             },
             action: async progress =>
             {
-                transcript = await _transcription.TranscribeAsync(audioPath, apiKey, progress);
+                transcript = await _transcription.TranscribeAsync(audioPath, progress);
                 if (MeetingArtifactStore.NeedsGeneratedTopic(source.Name))
                 {
                     try
@@ -515,6 +548,11 @@ public partial class MainWindow : Window
             job.Status = "Done";
             UpdateUiState();
             onSuccess();
+        }
+        catch (OperationCanceledException)
+        {
+            job.Status = "Cancelled";
+            UpdateUiState();
         }
         catch (Exception ex)
         {
@@ -778,6 +816,24 @@ public partial class MainWindow : Window
             FileName = path,
             UseShellExecute = true
         });
+    }
+
+    protected override void OnClosed(EventArgs e)
+    {
+        _transcription.Dispose();
+        try
+        {
+            _recorder.Dispose();
+        }
+        catch
+        {
+            // Closing the app should still terminate its local inference worker.
+        }
+        finally
+        {
+            _recordingResources.EndRecording();
+            base.OnClosed(e);
+        }
     }
 
     private sealed class MeetingJob(string operation, string status)

@@ -26,6 +26,7 @@ recordings/
 .env
 .env.*
 .venv/
+.venv-dev/
 venv/
 env/
 ENV/

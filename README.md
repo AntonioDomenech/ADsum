@@ -2,9 +2,9 @@
 
 ADsum is a cross-platform meeting recorder designed to capture system audio and microphone streams simultaneously, transcribe the conversation, and generate actionable notes. The repository is organised following a modular architecture so the audio engine, orchestration pipeline, transcription backends, and note generators can evolve independently.
 
-## ADsum v2 desktop app
+## ADsum v3 desktop app
 
-ADsum v2 adds a Windows-first .NET desktop app with a modern WPF UI and native WASAPI audio capture. It records the selected microphone and a WASAPI loopback stream from the selected output device at the same time, so you can capture your headset mic and the meeting audio you are hearing without taking exclusive control of playback.
+ADsum v3 is a Windows-first .NET desktop app with a WPF UI and native WASAPI audio capture. It records the selected microphone and a WASAPI loopback stream from the selected output device at the same time, so it can capture your headset mic and the meeting audio you hear without taking exclusive control of playback.
 
 Run it from source:
 
@@ -12,9 +12,31 @@ Run it from source:
 dotnet run --project .\src\ADsum.Desktop\ADsum.Desktop.csproj
 ```
 
-The desktop app targets .NET 10 on Windows.
+The desktop app targets .NET 10 on Windows. Transcription is local: [MOSS-Transcribe-Diarize 0.9B](https://github.com/OpenMOSS/MOSS-Transcribe-Diarize) writes the words, timestamps, and anonymous speaker labels such as `Speaker A`, `Speaker B`, and `Speaker C`. Meeting audio is not sent to an OpenAI transcription API.
 
-OpenAI transcription can use a key saved in the app, `ADSUM_OPENAI_API_KEY` / `OPENAI_API_KEY`, or a local `.env` file with either of those names. Transcription runs OpenAI speaker diarization on the combined mixed recording and labels voices as `Speaker A`, `Speaker B`, and so on, without assuming the microphone is a single person. ADsum then uses the transcript to create meeting minutes with a summary, important points, tasks or next steps, and decisions. To preserve speaker labels, ADsum first sends the full recording when it fits the upload limit; if the raw WAV is too large, it creates a temporary compressed upload copy and still tries to send one continuous file. Only recordings that remain too large after compression are split into chunks, where speaker labels may reset between local chunks. Meeting minutes default to `gpt-5.5`; set `ADSUM_OPENAI_NOTES_MODEL=gpt-5.4-mini` for a lower-cost notes model.
+MOSS runs only after recording has stopped and the user asks ADsum to create a transcript. It is not loaded while a meeting is being recorded, so the recorder keeps the computer's memory, GPU, and processor available for the meeting. Local MOSS jobs run one at a time. ADsum v3 also allows only one recording/transcription-capable process per Windows user and session, preventing a second desktop or `--transcribe-file` process from loading another model behind a meeting.
+
+Install the private MOSS runtime once before the first local transcript:
+
+```powershell
+# From an extracted v3 release
+.\setup_moss_runtime.ps1
+
+# Or from this repository
+.\scripts\setup_moss_runtime.ps1
+```
+
+The setup downloads a pinned Python 3.12 runtime, CUDA 12.8 PyTorch packages, the audited OpenMOSS source, and the pinned model snapshot. They are stored under `%LOCALAPPDATA%\ADsum\MossRuntime`; the script does not change the normal system Python or `PATH`. Check an existing installation without changing it:
+
+```powershell
+.\setup_moss_runtime.ps1 -Doctor
+```
+
+The model is intentionally not embedded in the ADsum release ZIP. This keeps the application download small and makes the model revision explicit. See [the v3 local MOSS guide](docs/v3-local-moss.md) for exact revisions, installation details, the long-meeting design, validation, and troubleshooting.
+
+MOSS advertises contexts up to 90 minutes on larger hardware, but ADsum uses the capacity actually measured on the target 8 GB RTX 5050 laptop: five-minute windows with a 30-second overlap. Each new window advances by 4½ minutes. The shared audio helps ADsum join boundary sentences and map speaker labels, while sequential windows let recordings continue well beyond 90 minutes without loading the whole meeting into GPU memory. Longer windows remain an expert override for GPUs with more memory.
+
+OpenAI remains optional for **meeting notes**, not transcription. A key saved in the app, `ADSUM_OPENAI_API_KEY` / `OPENAI_API_KEY`, or a local `.env` file can be used to create a summary, important points, tasks or next steps, and decisions from the local transcript. Meeting minutes default to `gpt-5.5`; set `ADSUM_OPENAI_NOTES_MODEL=gpt-5.4-mini` for a lower-cost notes model. If the short OpenAI meeting-title request is unavailable, ADsum uses its existing local title fallback.
 
 Build a Windows release artifact:
 
@@ -22,7 +44,12 @@ Build a Windows release artifact:
 .\scripts\build_windows.ps1
 ```
 
-The build creates `dist\ADsum-windows-dotnet.zip`, a self-contained Windows bundle that can be attached to a GitHub Release. People downloading that ZIP do not need to install the .NET runtime. See `docs/v2-windows-desktop.md` for the manual audio test checklist.
+The build creates:
+
+- `dist\ADsum-v3.0.0-windows-x64.zip`
+- `dist\ADsum-v3.0.0-windows-x64.zip.sha256`
+
+The ZIP is a self-contained Windows bundle that can be attached to a GitHub Release. It contains the .NET runtime, MOSS worker, pinned requirements, setup script, and documentation, but no model weights. The checksum file lets a downloader verify that the ZIP arrived unchanged.
 
 Each meeting is stored under `%LOCALAPPDATA%\ADsum\Recordings` in a folder named `yyyyMMdd-HHmm-topic`. The final topic-named recording is mixed from microphone and system audio with bounded level balancing so quieter room speech is less likely to be masked by louder computer audio. The folder contains:
 
@@ -32,9 +59,11 @@ Each meeting is stored under `%LOCALAPPDATA%\ADsum\Recordings` in a folder named
 
 The meeting-topic field is optional. After ADsum transcribes an unnamed meeting, it generates a short topic from the transcript, renames the timestamped recording folder, and gives both the audio and transcript matching topic filenames. A topic entered before recording is preserved and is applied to the files when the transcript is created. Existing meetings that still contain `recording.wav` remain supported. If the short OpenAI naming request is unavailable, ADsum derives a local keyword-based topic so the recording does not remain `Untitled meeting`.
 
-The desktop app also includes a **Library** tab for browsing previous meetings, previewing saved minutes/transcripts, opening the recording or folder directly, creating a transcript for an older recording, and creating notes from an existing transcript.
+The desktop app also includes a **Library** tab for browsing previous meetings, previewing saved minutes/transcripts, opening the recording or folder directly, creating a local transcript for an older recording, and creating notes from an existing transcript.
 
-Transcription and note generation run as per-meeting background jobs. Recording controls and the meeting library remain available while those jobs run, and you can start jobs for several different recordings without waiting for the first one to finish. ADsum prevents overlapping write jobs for the same meeting so its transcript, notes, and folder cannot be changed by two operations at once. The status badge shows the number of active background jobs, and the selected Library meeting shows its current processing step.
+Recording has priority over local transcription. ADsum does not start a MOSS job while recording. If the user starts another recording while a local transcript is being created, ADsum stops the worker, preserves its completed chunk checkpoints, waits until recording ends, and then resumes the transcript. Local MOSS work is serialized so two model copies cannot exhaust GPU memory. The existing per-meeting write lock still protects transcripts, notes, and folders from conflicting updates. The status badge and Library continue to show the current processing step.
+
+An audio file containing only digital silence or microscopic PCM rounding residue produces a successful empty transcript without loading MOSS. Non-silent model output must still contain canonical timestamps and speaker labels; malformed speech output is rejected instead of being silently accepted.
 
 ## Features
 
@@ -43,7 +72,7 @@ Transcription and note generation run as per-meeting background jobs. Recording 
 - Streaming-friendly recording pipeline that writes directly to disk.
 - In-app meeting library for reviewing previous recordings, transcripts, and minutes.
 - Storage layer backed by SQLite for recording metadata, transcripts, and notes.
-- Speaker-aware transcription services with OpenAI integration and a lightweight dummy fallback for offline tests.
+- Local MOSS speaker-aware transcription with timestamps; mock inference is reserved for automated offline tests.
 - OpenAI meeting-minutes generation for summaries, discussion points, next steps, and decisions.
 - Typer-powered CLI for device discovery, recording, transcription, and note generation.
 
@@ -155,27 +184,19 @@ Environment variables customise behaviour via `pydantic` settings (prefix `ADSUM
   `ADSUM_FFMPEG_BINARY`. Leave this setting empty if you prefer to manage FFmpeg manually.
 - `ADSUM_DEFAULT_MIC_DEVICE`: Preferred microphone device identifier remembered between sessions.
 - `ADSUM_DEFAULT_SYSTEM_DEVICE`: Preferred system audio device identifier remembered between sessions.
-- `ADSUM_OPENAI_TRANSCRIPTION_MODEL`: Model used for OpenAI transcription.
+- `ADSUM_OPENAI_TRANSCRIPTION_MODEL`: Model used by the legacy Python CLI's optional OpenAI transcription backend. The v3 Windows desktop app uses local MOSS.
 - `ADSUM_OPENAI_NOTES_MODEL`: Model used for OpenAI meeting minutes. Defaults to `gpt-5.5`; use `gpt-5.4-mini` for lower-cost long-meeting notes.
 - `ADSUM_OPENAI_MINUTES_MODEL`: Alias for `ADSUM_OPENAI_NOTES_MODEL`.
 - `ADSUM_OPENAI_API_KEY`: Optional API key forwarded to the OpenAI client (falls back to `OPENAI_API_KEY`).
-- `ADSUM_OPENAI_MAX_UPLOAD_BYTES`: Maximum payload size (default ~24 MiB) before recordings are automatically split for OpenAI uploads.
-
-Recordings that exceed the upload limit are transparently chunked into sequential WAV files before contacting OpenAI, ensuring long meetings are transcribed without manual intervention.
+- `ADSUM_OPENAI_MAX_UPLOAD_BYTES`: Maximum payload size used by the legacy Python CLI's optional OpenAI transcription backend.
 
 ### Choosing a transcription backend
 
-ADsum ships with multiple transcription providers. The CLI and desktop window default to a lightweight `dummy` backend that
-returns placeholder text so automated tests can run offline. When you are ready to capture real speech, explicitly pick another
-provider:
+The legacy Python CLI ships with multiple transcription providers and defaults to a lightweight `dummy` backend that returns placeholder text so automated tests can run offline. When using that CLI, explicitly select a real provider:
 
 - **CLI** – pass `--transcription-backend openai` (or your preferred backend) to `adsum record` or `adsum ui` commands.
-- **Window UI** – open *Configure environment ▸ Transcription backend* and select a real provider before starting a session.
 
-If you choose one of the OpenAI providers, make sure an API key is available. Set the standard `OPENAI_API_KEY` environment variable
-before launching ADsum or configure `ADSUM_OPENAI_API_KEY` via the *Environment* menu so the desktop app can save it to your `.env` file.
-If the dummy backend is still active when you start recording, both interfaces surface a prominent warning so you can switch to a
-real service before relying on the transcripts.
+If the Python CLI uses the OpenAI provider, make sure an API key is available. The v3 .NET desktop app instead uses the separately installed private MOSS runtime described above.
 
 ## Development
 

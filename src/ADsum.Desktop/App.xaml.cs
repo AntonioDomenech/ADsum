@@ -7,35 +7,100 @@ namespace ADsum.Desktop;
 
 public partial class App : Application
 {
+    private SingleInstanceMarker? _instanceMarker;
+
     protected override async void OnStartup(StartupEventArgs e)
     {
         base.OnStartup(e);
 
-        if (e.Args.Contains("--list-devices"))
+        if (RequiresExclusiveInstance(e.Args))
+        {
+            _instanceMarker = SingleInstanceMarker.TryCreate();
+            if (_instanceMarker is null)
+            {
+                await ReportExclusiveInstanceConflictAsync(e.Args);
+                return;
+            }
+        }
+
+        if (HasArgument(e.Args, "--list-devices"))
         {
             await WriteDeviceListAsync(e.Args);
             return;
         }
 
-        if (e.Args.Contains("--smoke-test"))
+        if (HasArgument(e.Args, "--smoke-test"))
         {
             await RunSmokeTestAsync(e.Args);
             return;
         }
 
-        if (e.Args.Contains("--transcribe-file"))
+        if (HasArgument(e.Args, "--transcribe-file"))
         {
             await TranscribeFileAsync(e.Args);
             return;
         }
 
-        if (e.Args.Contains("--minutes-file"))
+        if (HasArgument(e.Args, "--minutes-file"))
         {
             await CreateMinutesFileAsync(e.Args);
             return;
         }
 
         new MainWindow().Show();
+    }
+
+    protected override void OnExit(ExitEventArgs e)
+    {
+        _instanceMarker?.Dispose();
+        _instanceMarker = null;
+        base.OnExit(e);
+    }
+
+    private static bool RequiresExclusiveInstance(string[] args)
+    {
+        if (HasArgument(args, "--transcribe-file") || HasArgument(args, "--smoke-test"))
+        {
+            return true;
+        }
+
+        return !HasArgument(args, "--list-devices") && !HasArgument(args, "--minutes-file");
+    }
+
+    private static async Task ReportExclusiveInstanceConflictAsync(string[] args)
+    {
+        const string error =
+            "Another ADsum v3 process is already using recording or local transcription. " +
+            "Use that window, or wait for its offline transcription to finish.";
+
+        if (HasArgument(args, "--transcribe-file") || HasArgument(args, "--smoke-test"))
+        {
+            var defaultName = HasArgument(args, "--transcribe-file")
+                ? "adsum-transcription-result.json"
+                : "adsum-smoke-result.json";
+            var resultPath = ArgValue(args, "--result") ?? Path.Combine(Path.GetTempPath(), defaultName);
+            try
+            {
+                EnsureParentDirectory(resultPath);
+                await File.WriteAllTextAsync(
+                    resultPath,
+                    JsonSerializer.Serialize(
+                        new { ok = false, error },
+                        new JsonSerializerOptions { WriteIndented = true }));
+            }
+            finally
+            {
+                Current.Shutdown(2);
+            }
+            return;
+        }
+
+        MessageBox.Show(
+            error,
+            "ADsum v3 is already running",
+            MessageBoxButton.OK,
+            MessageBoxImage.Information);
+        Current.Shutdown(2);
     }
 
     private static async Task CreateMinutesFileAsync(string[] args)
@@ -69,9 +134,8 @@ public partial class App : Application
         {
             var audioPath = ArgValue(args, "--transcribe-file")
                 ?? throw new InvalidOperationException("Pass an audio path after --transcribe-file.");
-            var settings = new SettingsStore();
-            var service = new OpenAiTranscriptionService();
-            var text = await service.TranscribeAsync(audioPath, settings.OpenAiKey);
+            using var service = new MossTranscriptionService();
+            var text = await service.TranscribeAsync(audioPath);
             var payload = new { ok = true, text };
             EnsureParentDirectory(resultPath);
             await File.WriteAllTextAsync(resultPath, JsonSerializer.Serialize(payload, new JsonSerializerOptions { WriteIndented = true }));
@@ -179,6 +243,9 @@ public partial class App : Application
         }
         return null;
     }
+
+    private static bool HasArgument(string[] args, string name) =>
+        args.Any(value => value.Equals(name, StringComparison.OrdinalIgnoreCase));
 
     private static void EnsureParentDirectory(string path)
     {
