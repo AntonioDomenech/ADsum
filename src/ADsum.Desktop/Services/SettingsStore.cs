@@ -24,6 +24,8 @@ public sealed class SettingsStore
 
     public bool HasOpenAiKey => !string.IsNullOrWhiteSpace(OpenAiKey);
 
+    public bool UseLocalTopicNaming => IsTruthy(FindSetting("ADSUM_LOCAL_TOPIC_ONLY"));
+
     public void SaveOpenAiKey(string key)
     {
         _settings.OpenAiKey = Protect(key);
@@ -141,6 +143,12 @@ public sealed class SettingsStore
     }
 
     private static string? NonEmpty(string? value) => string.IsNullOrWhiteSpace(value) ? null : value.Trim();
+
+    private static bool IsTruthy(string? value) => value is not null &&
+        (value.Equals("1", StringComparison.OrdinalIgnoreCase) ||
+         value.Equals("true", StringComparison.OrdinalIgnoreCase) ||
+         value.Equals("yes", StringComparison.OrdinalIgnoreCase) ||
+         value.Equals("on", StringComparison.OrdinalIgnoreCase));
 
     private sealed class AppSettings
     {

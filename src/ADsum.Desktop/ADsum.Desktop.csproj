@@ -8,8 +8,8 @@
     <UseWPF>true</UseWPF>
     <AssemblyName>ADsum</AssemblyName>
     <RootNamespace>ADsum.Desktop</RootNamespace>
-    <Version>3.0.0</Version>
-    <FileVersion>3.0.0.0</FileVersion>
+    <Version>3.1.1</Version>
+    <FileVersion>3.1.1.0</FileVersion>
     <Product>ADsum</Product>
   </PropertyGroup>
 
@@ -18,7 +18,7 @@
   </ItemGroup>
 
   <ItemGroup>
-    <Content Include="Moss\moss_worker.py;Moss\requirements.txt">
+    <Content Include="Moss\local_speech_worker.py;Moss\requirements.txt">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
       <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
       <ExcludeFromSingleFile>true</ExcludeFromSingleFile>

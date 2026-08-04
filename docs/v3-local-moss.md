@@ -1,279 +1,204 @@
-# ADsum v3: local MOSS transcription
+# ADsum local speech pipeline
 
-ADsum v3 records a meeting first and transcribes it afterward. Think of those as two separate jobs:
+> The filename is retained so existing release links keep working. ADsum no
+> longer uses MOSS as its primary transcription engine.
 
-1. During the meeting, ADsum only captures and writes audio.
-2. After the meeting has stopped, the user can ask MOSS to turn that saved audio into text.
+ADsum records first and processes afterward:
 
-The MOSS model is not loaded during recording. This leaves the computer's memory, processor, and GPU available for Teams, Zoom, Meet, and the recording itself.
+1. During a meeting, ADsum only records microphone and system audio.
+2. After **Stop**, local Whisper writes the words and timestamps.
+3. The Whisper model is released from memory.
+4. Community-1 examines the complete meeting and decides who spoke when.
+5. ADsum joins each timestamped word to a meeting-global `Speaker A`,
+   `Speaker B`, `Speaker C`, and so on.
 
-## What is inside the release
+No transcription or speaker model is loaded while recording. Audio is not sent
+to OpenAI or to another transcription API.
 
-`ADsum-v3.0.0-windows-x64.zip` contains:
+## Why this replaces the five-minute MOSS design
 
-- The self-contained .NET 10 Windows application.
-- `Moss\moss_worker.py`, the small local bridge between ADsum and MOSS.
-- `Moss\requirements.txt`, containing exact Python package versions.
-- `setup_moss_runtime.ps1`, which creates the private local runtime.
-- This guide, the repository README, and the Apache 2.0 license.
+MOSS took roughly three hours to process the tested 1:30:17 meeting on the
+target RTX 5050 laptop. Splitting it into five-minute windows also restarted
+local speaker identities at every boundary.
 
-The ZIP deliberately does **not** contain MOSS model weights. The setup script downloads one exact model revision to the user's local application-data folder. This makes the application ZIP smaller and prevents a release from silently containing unknown model files.
+The new jobs are separate:
 
-## Computer and download requirements
+- `faster-whisper` uses internal VAD and GPU batches to write words quickly.
+- Community-1 uses sliding windows internally, but it clusters voice embeddings
+  across the whole recording before deciding speaker identity.
 
-The tested target is 64-bit Windows with:
+Those internal windows are memory containers, not separate meetings. Someone
+can be silent for 40 minutes and still return as the same speaker. Community-1
+also retains regular overlap-aware output in diagnostics. Exclusive diarization
+is used only to attach each Whisper word to one most likely speaker.
 
-- An NVIDIA GPU and a driver capable of running the CUDA 12.8 PyTorch build.
-- Approximately 8 GB or more of GPU memory for the tested five-minute processing window.
-- At least 10 GB of free disk space for Python, PyTorch, package caches, and model files.
-- Internet access during the first setup.
+## Tested speed
 
-ADsum itself remains self-contained. The setup does not add Python to `PATH`, replace a system Python installation, or install packages into a user's normal Python environment.
+Real input on the target machine:
 
-## Install the private runtime
+| Item | Measurement |
+|---|---:|
+| GPU | NVIDIA GeForce RTX 5050 Laptop, 8 GB |
+| Recording | 1:30:17.669 |
+| Speech after VAD | 1:26:03.2 |
+| Quality ASR inference, beam 5 | 2:19.723 |
+| Cached model load | 0:03.844 |
+| Quality ASR total | 2:23.567 |
+| Timestamped words | 13,302 |
+| Last detected speech | 1:30:07.31 |
 
-Extract the complete release ZIP. Do not run the setup script from inside the ZIP preview.
+The faster beam-1 diagnostic took 1:34.985 for inference and 2:02.089 including
+its first model setup/load path. ADsum uses the measured quality configuration:
+beam 5, `int8_float16`, batch 8, word timestamps, multilingual detection, and
+Silero VAD. Batch size falls back from 8 to 4 to 2 only after a CUDA
+out-of-memory error.
 
-In PowerShell, change into the extracted folder and run:
+The complete ASR and Community-1 pipeline was later measured at about 6 minutes
+25 seconds for this recording. That is a performance measurement, not a timer:
+ADsum continues processing recordings of any duration until they finish or the
+user cancels them.
+
+## One-time setup
+
+Community-1 is open, free to run locally, and CC-BY-4.0 licensed, but its model
+files are gated. The Hugging Face account owner must:
+
+1. Accept the conditions at
+   <https://huggingface.co/pyannote/speaker-diarization-community-1>.
+2. Create a read-only token at <https://huggingface.co/settings/tokens>.
+3. Run setup from the extracted release:
 
 ```powershell
-.\setup_moss_runtime.ps1
+.\setup_moss_runtime.ps1 -InstallDiarization -IAcceptPyannoteCommunity1Terms -PromptForHuggingFaceToken
 ```
 
-From a source checkout, run:
+From a source checkout, use:
 
 ```powershell
-.\scripts\setup_moss_runtime.ps1
+.\scripts\setup_moss_runtime.ps1 -InstallDiarization -IAcceptPyannoteCommunity1Terms -PromptForHuggingFaceToken
 ```
 
-The first setup is large because it downloads CUDA-enabled PyTorch and the MOSS weights. Later transcripts reuse those local files.
+The prompt masks the token. The setup script holds it only for the gated
+download, removes it before unrelated child processes run, clears it afterward,
+and never writes it to the command line, manifest, source tree, or ADsum
+settings. Automated setup may instead provide process-only `HF_TOKEN` and omit
+`-PromptForHuggingFaceToken`.
 
-If Windows marks the downloaded script as blocked, unblock this one trusted file and run it again:
+If Windows blocks the downloaded script, unblock that file or use a one-process
+execution-policy bypass. Do not change the machine-wide policy just for ADsum:
 
 ```powershell
 Unblock-File .\setup_moss_runtime.ps1
-.\setup_moss_runtime.ps1
+.\setup_moss_runtime.ps1 -InstallDiarization -IAcceptPyannoteCommunity1Terms -PromptForHuggingFaceToken
 ```
 
-The setup ends by running a doctor. The doctor verifies Python, exact package versions, CUDA access, the NVIDIA GPU, the worker's Python syntax, and the pinned model files. It does not run a full transcription or prove how much audio a particular GPU can process; the release validation tests below cover inference capacity separately.
-
-Run the same read-only check later with:
+Read-only verification:
 
 ```powershell
-.\setup_moss_runtime.ps1 -Doctor
+.\setup_moss_runtime.ps1 -Doctor -RequireDiarization
 ```
 
-Use `-Force` only when the private Python environment needs to be rebuilt:
+The ASR-only doctor intentionally reports that diarization is absent until the
+gated snapshot has been installed.
 
-```powershell
-.\setup_moss_runtime.ps1 -Force
-```
-
-`-Force` is limited to the private ADsum MOSS environment. It does not remove recordings or a system Python installation.
-
-## Pinned runtime
-
-ADsum v3.0.0 uses these exact components:
+## Pinned components
 
 | Component | Pin |
 |---|---|
 | Python | `3.12.13` |
-| uv bootstrapper | `0.12.1` |
-| PyTorch | `2.11.0+cu128` |
-| Torchaudio | `2.11.0+cu128` |
-| Transformers | `5.13.1` |
-| Hugging Face Hub | `1.26.0` |
-| Safetensors | `0.8.0` |
-| NumPy | `2.4.6` |
-| OpenMOSS source | `0e3d1403fd8f1f1c674e883ece96b9f630794ebe` |
-| Model | `OpenMOSS-Team/MOSS-Transcribe-Diarize` |
-| Model revision | `e8681d68e7042738ffca8ac8212bc8fcb1131ab8` |
+| uv | `0.12.1` |
+| PyTorch / torchaudio | `2.11.0+cu128` |
+| faster-whisper | `1.2.1` |
+| CTranslate2 | `4.8.1` |
+| pyannote.audio | `4.0.7` |
+| ASR model | `mobiuslabsgmbh/faster-whisper-large-v3-turbo` |
+| ASR revision | `0a363e9161cbc7ed1431c9597a8ceaf0c4f78fcf` |
+| Diarization model | `pyannote/speaker-diarization-community-1` |
+| Diarization revision | `3533c8cf8e369892e6b79ff1bf80f7b0286a54ee` |
 
-The pinned CUDA packages are resolved using `https://download.pytorch.org/whl/cu128`. The setup downloads the OpenMOSS source from its immutable Git commit and the model from its immutable Hugging Face revision. The worker then loads the local snapshot rather than asking for whatever version happens to be newest.
+The model aliases and revisions resolve to the exact faster-whisper snapshot
+used in the full-length benchmark.
 
-## Private file locations
+## Private locations
 
-The setup stores everything below:
+The compatibility runtime root remains:
 
 ```text
 %LOCALAPPDATA%\ADsum\MossRuntime
 ```
 
-Important paths are:
+Important paths:
 
 ```text
 %LOCALAPPDATA%\ADsum\MossRuntime\.venv\Scripts\python.exe
-%LOCALAPPDATA%\ADsum\MossRuntime\Models\MOSS\e8681d68e7042738ffca8ac8212bc8fcb1131ab8
+%LOCALAPPDATA%\ADsum\MossRuntime\Models\FasterWhisper\large-v3-turbo
+%LOCALAPPDATA%\ADsum\MossRuntime\Models\Pyannote\speaker-diarization-community-1
+%LOCALAPPDATA%\ADsum\MossRuntime\Checkpoints\LocalSpeech
 %LOCALAPPDATA%\ADsum\MossRuntime\install.json
 ```
 
-Recordings remain in their existing location:
+Recordings stay separate under `%LOCALAPPDATA%\ADsum\Recordings`. Rebuilding
+the private runtime must never remove a recording.
 
-```text
-%LOCALAPPDATA%\ADsum\Recordings
-```
+## Recording priority and checkpoints
 
-The model directory and recordings are separate. Rebuilding the MOSS runtime must never delete meeting audio.
+The interface and normal workflow are unchanged: **Record**, **Stop**, then
+**Create transcript**.
 
-### Optional environment overrides
+ADsum refuses to start model work while recording. If a new recording begins
+during processing, the Windows worker process is terminated so the meeting gets
+the GPU and memory. A completed ASR result is saved atomically with an audio
+SHA-256 and settings signature. After recording ends, ADsum can reuse compatible
+ASR work and continue with global diarization. A changed WAV or changed ASR
+setting cannot reuse a stale checkpoint.
 
-The defaults above require no configuration. Developers and testers can override them with:
+Successful jobs remove their checkpoint folder. Interrupted jobs keep it.
 
-- `ADSUM_MOSS_PYTHON`: Full path to the private `python.exe`.
-- `ADSUM_MOSS_WORKER`: Full path to `moss_worker.py`.
-- `ADSUM_MOSS_MODEL_PATH`: Full path to a complete local model snapshot.
-- `ADSUM_MOSS_LANGUAGE`: `auto`, `en`, `es`, or `mixed`; the default is `auto`.
-- `ADSUM_MOSS_HOTWORDS`: Comma/semicolon-separated terms or a JSON string array.
-- `ADSUM_MOSS_CHUNK_SECONDS`: Input-window length from 300 through 1,800 seconds; the tested 8 GB default is 300. Values above 300 are intended for larger GPUs and can cause an out-of-memory failure.
-- `ADSUM_MOSS_OVERLAP_SECONDS`: Shared boundary audio from 0 through 600 seconds, and always shorter than the input window; the default is 30.
-- `ADSUM_MOSS_ENCODER_BATCH_SIZE`: Number of MOSS's internal 30-second Whisper feature blocks encoded together; the default is 1 to bound temporary encoder memory.
+## Timing without a processing cutoff
 
-Completed long-audio checkpoints are stored below `%LOCALAPPDATA%\ADsum\MossRuntime\Checkpoints`. Successful jobs remove their checkpoints; interrupted jobs keep them for a retry or post-recording resume.
+The worker records inspection, model load, ASR, model release, diarization,
+merge, and total wall time. ADsum shows friendly stage names and elapsed time in
+the existing status area. There is no 20-minute recording or transcription
+cutoff. A job continues until the complete saved recording is processed, the
+user cancels it, the app closes, or a new recording temporarily preempts it.
 
-## What happens when creating a transcript
+Release acceptance requires a cold complete run on the target laptop with:
 
-The visible ADsum workflow remains the same:
+- a dense meeting of at least 90 minutes;
+- English, Spanish, and code-switching samples;
+- simultaneous speakers;
+- at least five speakers;
+- a speaker who leaves for a long period and returns;
+- no CUDA out-of-memory event;
+- complete timestamp coverage; and
+- complete processing of the entire recording without an app-imposed duration limit.
 
-1. Select the microphone and system output.
-2. Press **Record**.
-3. Hold the meeting.
-4. Press **Stop**.
-5. Press **Create transcript**.
+## Important overlap limitation
 
-Behind the interface, ADsum does the following:
+Community-1 can report that A and B spoke at the same time. Whisper still emits
+one text stream. If the louder voice masks the quieter voice, diarization cannot
+invent the missing words. Recovering both conversations would require selective
+source separation or a second ASR pass and must remain inside the time budget.
 
-1. Confirms that recording has stopped.
-2. Acquires the user/session-wide ADsum recording-and-MOSS slot. A second v3 desktop, device-test, or `--transcribe-file` process cannot load another model copy.
-3. Starts the private Python worker and loads the pinned local model.
-4. Processes the completed WAV in sequential windows.
-5. Joins timestamps and speaker labels into the existing transcript format.
-6. Exits the worker when the job ends, releasing GPU and system memory.
+## Developer overrides
 
-ADsum does not perform live transcription. If a new recording begins while an older meeting is being transcribed, recording wins: ADsum stops the MOSS worker, keeps its completed chunk checkpoints, waits until recording ends, and then resumes the saved job. The model and a live recording therefore do not compete for the GPU or system memory.
+- `ADSUM_LOCAL_SPEECH_PYTHON`: private Python executable.
+- `ADSUM_LOCAL_SPEECH_WORKER`: `local_speech_worker.py` path.
+- `ADSUM_LOCAL_SPEECH_ASR_MODEL`: local faster-whisper snapshot.
+- `ADSUM_LOCAL_SPEECH_DIARIZATION_MODEL`: local Community-1 snapshot.
+- `ADSUM_LOCAL_SPEECH_LANGUAGE`: `auto`, `en`, `es`, or `mixed`.
+- `ADSUM_LOCAL_SPEECH_HOTWORDS`: comma/semicolon list or JSON string array.
+- `ADSUM_LOCAL_SPEECH_BATCH_SIZE`: `8`, `4`, or `2`.
+- `ADSUM_LOCAL_SPEECH_COMPUTE_TYPE`: defaults to `int8_float16`.
+- `ADSUM_LOCAL_TOPIC_ONLY`: forces local meeting-title generation.
 
-The `--transcribe-file` switch is an offline diagnostic path. If it is started before the desktop app, the desktop app asks the user to wait for that offline job rather than opening a second recording-capable process. In the normal desktop workflow, recording and transcription live in the same process, so Record can preempt an active MOSS job.
+The old `ADSUM_MOSS_WORKER` variable is deliberately not used as a worker
+fallback because its protocol is incompatible. A few language/hotword/Python
+compatibility fallbacks remain for existing v3.0 test setups.
 
-Before model loading, the worker streams over the WAV and checks for true digital silence or microscopic PCM residue. A peak no larger than 8 out of 32,768 (about -72 dBFS) returns a successful empty transcript and does not construct the model. Any stronger signal continues through normal MOSS inference and strict transcript validation.
+## OpenAI notes remain optional
 
-## Meetings longer than 90 minutes
-
-MOSS is designed for a single context of up to 90 minutes, but that maximum assumes much more working GPU memory than this 8 GB laptop has. Real capacity tests on the target RTX 5050 found that 15-, 25-, and 30-minute windows exhausted GPU memory. A 7½-minute stress window completed but peaked at 7,704 MiB, leaving too little room for normal desktop use. ADsum therefore uses the five-minute window that completed through its final speech with a measured 4,696 MiB peak:
-
-```text
-Window length: 5 minutes
-Shared overlap: 30 seconds
-Advance:        4 minutes 30 seconds
-```
-
-A 95-minute recording is processed like this:
-
-```text
-Part 1:  00:00-05:00
-Part 2:  04:30-09:30
-...
-Part 20: 85:30-90:30
-Part 21: 90:00-95:00
-```
-
-The shared 30 seconds are heard twice by MOSS. ADsum uses that identical audio to avoid losing a sentence at a cut, remove duplicate text, and match local `S01`, `S02`, and `S03` labels to the transcript's global `Speaker A`, `Speaker B`, and `Speaker C` labels.
-
-The parts run one after another, never in parallel. A meeting can therefore be much longer than 90 minutes; ADsum creates more sequential windows and atomically checkpoints each completed part.
-
-Speaker matching across separately processed windows is evidence-based. When the same person speaks in an overlap, their label can usually be connected. If a person is absent from the overlap and returns much later, MOSS does not provide a documented permanent voice identity. ADsum should create a new label instead of guessing and incorrectly merging two different people.
-
-## OpenAI meeting notes remain optional
-
-Local MOSS replaces the OpenAI **transcription** call. It does not replace the existing meeting-notes feature.
-
-After reviewing a local transcript, the user can still press **Create notes**. That separate action may send transcript text to the configured OpenAI notes model to produce:
-
-- A summary.
-- Important discussion points.
-- Tasks or next steps.
-- Decisions.
-
-The OpenAI key field is retained for this optional notes step. Recording and local transcription do not require that key. If no notes are requested, the meeting audio and MOSS transcription stay local.
-
-## Build and verify a release
-
-From the repository root:
-
-```powershell
-.\scripts\build_windows.ps1
-```
-
-The build produces:
-
-```text
-dist\ADsum-v3.0.0-windows-x64.zip
-dist\ADsum-v3.0.0-windows-x64.zip.sha256
-```
-
-The build fails if the worker, requirements, setup script, or this guide is missing. It also fails if a `.safetensors`, `.bin`, `.pt`, `.pth`, or `.ckpt` model-weight file appears in the publish directory.
-
-Verify the release checksum with:
-
-```powershell
-$expected = (Get-Content .\dist\ADsum-v3.0.0-windows-x64.zip.sha256).Split()[0]
-$actual = (Get-FileHash .\dist\ADsum-v3.0.0-windows-x64.zip -Algorithm SHA256).Hash.ToLowerInvariant()
-if ($actual -ne $expected) { throw "Checksum mismatch" }
-```
-
-## Manual validation checklist
-
-Before publishing v3.0.0:
-
-1. Extract the release into a new folder.
-2. Confirm the ZIP contains `ADsum.exe`, `Moss\moss_worker.py`, `Moss\requirements.txt`, and `setup_moss_runtime.ps1`.
-3. Confirm the ZIP contains no model-weight files.
-4. Run `setup_moss_runtime.ps1 -Doctor` on a configured test machine; treat this as an installation check, not an inference-capacity test.
-5. Run real MOSS inference on a dense five-minute capacity sample. Confirm it reaches speech near the end and retains practical GPU headroom.
-6. Start a recording and confirm no MOSS Python process or model memory is active.
-7. While that recording is active, try a second v3 `--transcribe-file` process and confirm it exits with the single-instance error without starting Python.
-8. Stop recording, create a short transcript, and confirm timestamps and at least two speaker labels.
-9. Create a transcript from a digitally silent WAV and confirm it completes empty without loading MOSS.
-10. While transcribing a multi-chunk saved meeting, start a new recording. Confirm the complete worker job exits, recording remains smooth, and MOSS resumes from its checkpoint only after Stop.
-11. Process a synthetic or consented recording longer than 90 minutes through the same five-minute/30-second plan.
-12. Confirm the transcript reaches speech after minute 90, timestamps remain in order, and overlap phrases are not duplicated.
-13. Create optional OpenAI notes from that local transcript and confirm the existing notes file is preserved.
-14. Close ADsum and confirm no MOSS worker remains running.
-
-## Troubleshooting
-
-### Doctor says private Python is missing
-
-Run the setup without `-Doctor`:
-
-```powershell
-.\setup_moss_runtime.ps1
-```
-
-### Doctor says CUDA is unavailable
-
-Confirm that Windows sees the NVIDIA GPU and install a driver compatible with CUDA 12.8 PyTorch. Reboot after changing the driver, then run the doctor again. The setup installs CUDA-enabled PyTorch wheels; it does not install or replace the NVIDIA display driver.
-
-### Setup runs out of disk space
-
-Free at least 10 GB on the drive containing `%LOCALAPPDATA%`. Package and model downloads use the private runtime's cache, so both the final files and temporary download data need space.
-
-### Model download was interrupted
-
-Run the same setup command again. Hugging Face's snapshot downloader verifies and resumes the pinned snapshot. If the Python environment itself is damaged, add `-Force`.
-
-### First transcript is slow
-
-The first worker start must initialize CUDA and read the model weights from disk. Later chunks in the same job reuse the loaded model. ADsum intentionally runs only one chunk at a time to stay within laptop memory limits.
-
-### MOSS reports that GPU memory is full
-
-The v3.0.0 default is the five-minute window tested on the 8 GB RTX 5050. Remove any `ADSUM_MOSS_CHUNK_SECONDS` override above 300 and close other GPU-heavy applications before retrying. Completed checkpoints remain available after a failed or interrupted job. The worker reports an error rather than silently saving an incomplete transcript.
-
-### A person receives a new letter later in a long meeting
-
-The voice may not have appeared in the shared overlap between two processing windows. ADsum avoids guessing when there is not enough evidence. A future optional speaker-embedding stage could improve this case without changing the interface.
-
-## Security and licenses
-
-MOSS uses custom model code. ADsum pins both the reviewed OpenMOSS source commit and model revision instead of loading an unspecified latest revision. The model is downloaded only during explicit setup and is loaded from the local snapshot afterward.
-
-ADsum is Apache 2.0 licensed. MOSS-Transcribe-Diarize and its source declare Apache 2.0 licensing at the pinned revisions. Third-party Python and CUDA packages keep their own licenses.
+Local transcription and diarization need no OpenAI key. **Create notes** remains
+a separate optional action that can send transcript text to the configured
+OpenAI notes model. If notes are not requested, meeting audio and transcription
+stay local.

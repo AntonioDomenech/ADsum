@@ -2,4 +2,7 @@
   <Folder Name="/src/">
     <Project Path="src/ADsum.Desktop/ADsum.Desktop.csproj" />
   </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/ADsum.Desktop.AudioHarness/ADsum.Desktop.AudioHarness.csproj" />
+  </Folder>
 </Solution>

@@ -29,7 +29,7 @@ internal sealed class WindowsKillOnCloseJob : IDisposable
         var handle = CreateJobObject(IntPtr.Zero, null);
         if (handle.IsInvalid)
         {
-            throw new Win32Exception(Marshal.GetLastWin32Error(), "Unable to create the MOSS Windows Job Object.");
+            throw new Win32Exception(Marshal.GetLastWin32Error(), "Unable to create the local speech Windows Job Object.");
         }
 
         var information = new JobObjectExtendedLimitInformation
@@ -48,7 +48,7 @@ internal sealed class WindowsKillOnCloseJob : IDisposable
             {
                 throw new Win32Exception(
                     Marshal.GetLastWin32Error(),
-                    "Unable to configure the MOSS Windows Job Object.");
+                    "Unable to configure the local speech Windows Job Object.");
             }
         }
         catch
@@ -111,7 +111,7 @@ internal sealed class WindowsKillOnCloseJob : IDisposable
             var error = Marshal.GetLastWin32Error();
             if (error != ErrorInvalidParameter)
             {
-                throw new Win32Exception(error, "Unable to terminate the MOSS Windows Job Object.");
+                throw new Win32Exception(error, "Unable to terminate the local speech Windows Job Object.");
             }
         }
     }
@@ -161,7 +161,7 @@ internal sealed class WindowsKillOnCloseJob : IDisposable
                 return;
             }
 
-            throw new Win32Exception(error, $"Unable to contain MOSS process {processId} in its Windows Job Object.");
+            throw new Win32Exception(error, $"Unable to contain local speech process {processId} in its Windows Job Object.");
         }
         catch (ArgumentException)
         {
@@ -194,7 +194,7 @@ internal sealed class WindowsKillOnCloseJob : IDisposable
             {
                 throw new Win32Exception(
                     Marshal.GetLastWin32Error(),
-                    "Unable to verify that the MOSS Windows Job Object is empty.");
+                    "Unable to verify that the local speech Windows Job Object is empty.");
             }
 
             return Marshal.PtrToStructure<JobObjectBasicAccountingInformation>(pointer).ActiveProcesses;
@@ -210,7 +210,7 @@ internal sealed class WindowsKillOnCloseJob : IDisposable
         using var snapshot = CreateToolhelp32Snapshot(Th32csSnapProcess, 0);
         if (snapshot.IsInvalid)
         {
-            throw new Win32Exception(Marshal.GetLastWin32Error(), "Unable to inspect the MOSS process tree.");
+            throw new Win32Exception(Marshal.GetLastWin32Error(), "Unable to inspect the local speech process tree.");
         }
 
         var childrenByParent = new Dictionary<int, List<int>>();
@@ -234,7 +234,7 @@ internal sealed class WindowsKillOnCloseJob : IDisposable
             var error = Marshal.GetLastWin32Error();
             if (error != 0 && error != ErrorNoMoreFiles)
             {
-                throw new Win32Exception(error, "Unable to finish inspecting the MOSS process tree.");
+                throw new Win32Exception(error, "Unable to finish inspecting the local speech process tree.");
             }
         }
 

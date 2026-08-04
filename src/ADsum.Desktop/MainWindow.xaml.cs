@@ -168,7 +168,7 @@ public partial class MainWindow : Window
                     return;
                 }
 
-                TranscriptBox.Text = "Preparing local MOSS transcription...";
+                TranscriptBox.Text = "Preparing local transcription...";
                 MinutesBox.Text = "Transcript is being created. Notes are separate.";
             },
             action: async progress =>
@@ -176,15 +176,24 @@ public partial class MainWindow : Window
                 transcript = await _transcription.TranscribeAsync(audioPath, progress);
                 if (MeetingArtifactStore.NeedsGeneratedTopic(source.Name))
                 {
-                    try
-                    {
-                        generatedTopic = await _minutes.CreateTopicAsync(transcript, apiKey, notesModel, progress);
-                    }
-                    catch
+                    if (_settings.UseLocalTopicNaming)
                     {
                         generatedTopic = MeetingTopicFallback.FromTranscript(transcript, source.StartedAt);
                         usedLocalTopicFallback = true;
                         progress.Report("Naming meeting locally");
+                    }
+                    else
+                    {
+                        try
+                        {
+                            generatedTopic = await _minutes.CreateTopicAsync(transcript, apiKey, notesModel, progress);
+                        }
+                        catch
+                        {
+                            generatedTopic = MeetingTopicFallback.FromTranscript(transcript, source.StartedAt);
+                            usedLocalTopicFallback = true;
+                            progress.Report("Naming meeting locally");
+                        }
                     }
                 }
             },
@@ -347,7 +356,7 @@ public partial class MainWindow : Window
                     return;
                 }
 
-                LibraryTranscriptBox.Text = "Preparing local MOSS transcription...";
+                LibraryTranscriptBox.Text = "Preparing local transcription...";
                 LibraryMinutesBox.Text = "Transcript is being created. Notes are separate.";
             },
             action: async progress =>
@@ -355,14 +364,22 @@ public partial class MainWindow : Window
                 transcript = await _transcription.TranscribeAsync(audioPath, progress);
                 if (MeetingArtifactStore.NeedsGeneratedTopic(source.Name))
                 {
-                    try
-                    {
-                        generatedTopic = await _minutes.CreateTopicAsync(transcript, apiKey, notesModel, progress);
-                    }
-                    catch
+                    if (_settings.UseLocalTopicNaming)
                     {
                         generatedTopic = MeetingTopicFallback.FromTranscript(transcript, source.StartedAt);
                         progress.Report("Naming meeting locally");
+                    }
+                    else
+                    {
+                        try
+                        {
+                            generatedTopic = await _minutes.CreateTopicAsync(transcript, apiKey, notesModel, progress);
+                        }
+                        catch
+                        {
+                            generatedTopic = MeetingTopicFallback.FromTranscript(transcript, source.StartedAt);
+                            progress.Report("Naming meeting locally");
+                        }
                     }
                 }
             },
@@ -687,6 +704,7 @@ public partial class MainWindow : Window
     {
         var details =
             $"{item.DateText}\n" +
+            $"{item.DurationText}\n" +
             $"{item.FileSummary}\n" +
             $"{item.DirectoryPath}";
         if (TryGetMeetingJob(item.DirectoryPath, out var job))

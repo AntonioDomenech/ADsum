@@ -184,7 +184,8 @@
                                     <DataTemplate>
                                         <StackPanel Margin="4">
                                             <TextBlock Text="{Binding DisplayName}" FontWeight="SemiBold" TextWrapping="Wrap" />
-                                            <TextBlock Text="{Binding FileSummary}" Foreground="{StaticResource MutedBrush}" FontSize="12" Margin="0,3,0,0" />
+                                            <TextBlock Text="{Binding DurationText}" Foreground="{StaticResource MutedBrush}" FontSize="12" Margin="0,3,0,0" />
+                                            <TextBlock Text="{Binding FileSummary}" Foreground="{StaticResource MutedBrush}" FontSize="12" Margin="0,2,0,0" />
                                         </StackPanel>
                                     </DataTemplate>
                                 </ListBox.ItemTemplate>

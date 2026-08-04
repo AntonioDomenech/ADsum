@@ -51,6 +51,7 @@ MAX_CHUNK_SECONDS = 30 * 60
 DEFAULT_OVERLAP_SECONDS = 30
 DEFAULT_MAX_NEW_TOKENS = 4_096
 DEFAULT_ENCODER_BATCH_SIZE = 1
+DEFAULT_CACHE_MODE = "auto"
 MODEL_CONTEXT_TOKENS = 131_072
 CONTEXT_SAFETY_TOKENS = 1_024
 
@@ -282,6 +283,28 @@ def normalize_request(payload: Mapping[str, Any]) -> dict[str, Any]:
     if encoder_batch_size < 1 or encoder_batch_size > 16:
         raise WorkerError("invalid_encoder_batch_size", "encoderBatchSize must be from 1 through 16.")
 
+    cache_value = payload.get("cacheMode")
+    if cache_value is None and "offloadCache" in payload:
+        # Protocol-v1 compatibility for v3.0 callers. Both cache placements
+        # produce the same greedy tokens; only their speed and VRAM use differ.
+        cache_value = "offloaded" if bool(payload.get("offloadCache")) else "gpu"
+    cache_mode = str(cache_value or DEFAULT_CACHE_MODE).strip().lower()
+    cache_aliases = {
+        "auto": "auto",
+        "gpu": "gpu",
+        "dynamic": "gpu",
+        "on-device": "gpu",
+        "offloaded": "offloaded",
+        "offload": "offloaded",
+        "cpu": "offloaded",
+    }
+    if cache_mode not in cache_aliases:
+        raise WorkerError(
+            "invalid_cache_mode",
+            "cacheMode must be auto, gpu, or offloaded.",
+        )
+    cache_mode = cache_aliases[cache_mode]
+
     return {
         "protocolVersion": PROTOCOL_VERSION,
         "requestId": request_id,
@@ -297,7 +320,7 @@ def normalize_request(payload: Mapping[str, Any]) -> dict[str, Any]:
         "overlapSeconds": overlap_seconds,
         "resume": bool(payload.get("resume", True)),
         "maxNewTokens": int(payload.get("maxNewTokens", DEFAULT_MAX_NEW_TOKENS)),
-        "offloadCache": bool(payload.get("offloadCache", True)),
+        "cacheMode": cache_mode,
         "encoderBatchSize": encoder_batch_size,
         "mockInference": mock_config,
         "mockResults": payload.get("mockResults"),
@@ -717,6 +740,7 @@ class MossInferenceEngine:
         self._processor = None
         self._device = None
         self._dtype = None
+        self._force_offloaded_cache = False
 
     def _ensure_loaded(self) -> None:
         if self._model is not None:
@@ -858,16 +882,82 @@ class MossInferenceEngine:
             raw = reader.readframes(reader.getnframes())
         return np.frombuffer(raw, dtype="<i2").astype(np.float32) / 32768.0
 
-    def infer(self, chunk_audio: Path, chunk: ChunkSpec, prompt: str) -> dict[str, Any]:
-        self._ensure_loaded()
+    def _generation_config(self, max_new_tokens: int, cache_mode: str):
+        generation_config = copy.deepcopy(self._model.generation_config)
+        generation_config.max_new_tokens = max_new_tokens
+        generation_config.do_sample = False
+        # None selects Transformers' ordinary on-device DynamicCache. It is
+        # output-equivalent to OffloadedCache but avoids moving every decoder
+        # layer's growing K/V tensors across PCIe for every generated token.
+        generation_config.cache_implementation = "offloaded" if cache_mode == "offloaded" else None
+        return generation_config
+
+    def _generate_once(self, inputs: Mapping[str, Any], max_new_tokens: int, cache_mode: str):
         torch = self._torch
-        model = self._model
+        with torch.inference_mode(), torch.amp.autocast("cuda", dtype=self._dtype):
+            return self._model.generate(
+                input_ids=inputs["input_ids"],
+                attention_mask=inputs["attention_mask"],
+                input_features=inputs["input_features"],
+                audio_feature_lengths=inputs["audio_feature_lengths"],
+                audio_chunk_mapping=inputs["audio_chunk_mapping"],
+                generation_config=self._generation_config(max_new_tokens, cache_mode),
+            )
+
+    def _generate_with_cache_fallback(
+        self,
+        inputs: Mapping[str, Any],
+        max_new_tokens: int,
+        chunk: ChunkSpec,
+    ) -> tuple[Any, str, bool]:
+        configured_mode = str(self.request.get("cacheMode", DEFAULT_CACHE_MODE))
+        cache_mode = (
+            "offloaded"
+            if configured_mode == "offloaded" or self._force_offloaded_cache
+            else "gpu"
+        )
+        try:
+            return self._generate_once(inputs, max_new_tokens, cache_mode), cache_mode, False
+        except Exception as exc:
+            if (
+                configured_mode != "auto"
+                or cache_mode != "gpu"
+                or not _is_cuda_out_of_memory(exc)
+            ):
+                raise
+
+        # We deliberately retry after leaving the exception handler. Python can
+        # then release the failed generation traceback and any tensors it kept
+        # alive before we ask CUDA to return unused blocks. That gives the
+        # lower-memory retry the best chance of succeeding.
+        #
+        # Keep the exact model, BF16 weights, prompt, and greedy decoding; only
+        # move the K/V cache to normal RAM when this GPU is genuinely too full
+        # for the fast path. Persist the fallback so later chunks do not waste
+        # time repeating an expected OOM.
+        self._force_offloaded_cache = True
+        self.emit(
+            {
+                "type": "progress",
+                "phase": "cache_fallback_offloaded",
+                "chunkIndex": chunk.index,
+            }
+        )
+        gc.collect()
+        self._torch.cuda.empty_cache()
+        return self._generate_once(inputs, max_new_tokens, "offloaded"), "offloaded", True
+
+    def _infer_loaded(self, chunk_audio: Path, chunk: ChunkSpec, prompt: str) -> dict[str, Any]:
+        torch = self._torch
         processor = self._processor
         device = self._device
-        dtype = self._dtype
         started = time.monotonic()
+        torch.cuda.reset_peak_memory_stats(device)
+        free_before, total_memory = torch.cuda.mem_get_info(device)
 
+        audio_started = time.monotonic()
         audio = self._load_float_audio(chunk_audio)
+        audio_load_seconds = time.monotonic() - audio_started
         messages = [
             {
                 "role": "user",
@@ -878,52 +968,71 @@ class MossInferenceEngine:
             }
         ]
         rendered = processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+
+        processor_started = time.monotonic()
+        inputs = processor(
+            text=rendered,
+            audio=[audio],
+            max_length=MODEL_CONTEXT_TOKENS,
+            audio_kwargs={"device": str(device)},
+            return_tensors="pt",
+        ).to(device)
+        processor_seconds = time.monotonic() - processor_started
+        prompt_tokens = int(inputs["attention_mask"][0].sum().item())
+        room = MODEL_CONTEXT_TOKENS - prompt_tokens - CONTEXT_SAFETY_TOKENS
+        max_new_tokens = min(int(self.request["maxNewTokens"]), room)
+        if max_new_tokens <= 0:
+            raise WorkerError(
+                "context_exceeded",
+                f"Chunk {chunk.index} leaves no room for transcript output.",
+                retryable=True,
+                details={"chunkIndex": chunk.index, "promptTokens": prompt_tokens},
+            )
+
+        generation_started = time.monotonic()
+        outputs, cache_mode, cache_fallback = self._generate_with_cache_fallback(
+            inputs,
+            max_new_tokens,
+            chunk,
+        )
+        torch.cuda.synchronize(device)
+        generation_seconds = time.monotonic() - generation_started
+        generated_ids = outputs[0][prompt_tokens:]
+        raw_text = processor.tokenizer.decode(generated_ids, skip_special_tokens=True).strip()
+        generated_tokens = int(generated_ids.numel())
+        segments = parse_canonical_transcript(raw_text)
+        elapsed_seconds = time.monotonic() - started
+        peak_allocated = torch.cuda.max_memory_allocated(device)
+        peak_reserved = torch.cuda.max_memory_reserved(device)
+        result = {
+            "rawText": raw_text,
+            "segments": segments,
+            "generatedTokens": generated_tokens,
+            "promptTokens": prompt_tokens,
+            "elapsedSeconds": elapsed_seconds,
+            "audioLoadSeconds": audio_load_seconds,
+            "processorSeconds": processor_seconds,
+            "generationSeconds": generation_seconds,
+            "generatedTokensPerSecond": (
+                generated_tokens / generation_seconds if generation_seconds > 0 else 0.0
+            ),
+            "cacheMode": cache_mode,
+            "cacheFallback": cache_fallback,
+            "encoderBatchSize": int(self.request["encoderBatchSize"]),
+            "freeGpuBeforeMiB": free_before / (1024 * 1024),
+            "totalGpuMiB": total_memory / (1024 * 1024),
+            "peakGpuAllocatedMiB": peak_allocated / (1024 * 1024),
+            "peakGpuReservedMiB": peak_reserved / (1024 * 1024),
+            "backend": "transformers",
+        }
+        del generated_ids, outputs, inputs, audio
+        return result
+
+    def infer(self, chunk_audio: Path, chunk: ChunkSpec, prompt: str) -> dict[str, Any]:
+        self._ensure_loaded()
+        torch = self._torch
         try:
-            inputs = processor(
-                text=rendered,
-                audio=[audio],
-                max_length=MODEL_CONTEXT_TOKENS,
-                audio_kwargs={"device": str(device)},
-                return_tensors="pt",
-            ).to(device)
-            prompt_tokens = int(inputs["attention_mask"][0].sum().item())
-            room = MODEL_CONTEXT_TOKENS - prompt_tokens - CONTEXT_SAFETY_TOKENS
-            max_new_tokens = min(int(self.request["maxNewTokens"]), room)
-            if max_new_tokens <= 0:
-                raise WorkerError(
-                    "context_exceeded",
-                    f"Chunk {chunk.index} leaves no room for transcript output.",
-                    retryable=True,
-                    details={"chunkIndex": chunk.index, "promptTokens": prompt_tokens},
-                )
-
-            generation_config = copy.deepcopy(model.generation_config)
-            generation_config.max_new_tokens = max_new_tokens
-            generation_config.do_sample = False
-            if self.request.get("offloadCache"):
-                generation_config.cache_implementation = "offloaded"
-
-            with torch.inference_mode(), torch.amp.autocast("cuda", dtype=dtype):
-                outputs = model.generate(
-                    input_ids=inputs["input_ids"],
-                    attention_mask=inputs["attention_mask"],
-                    input_features=inputs["input_features"],
-                    audio_feature_lengths=inputs["audio_feature_lengths"],
-                    audio_chunk_mapping=inputs["audio_chunk_mapping"],
-                    generation_config=generation_config,
-                )
-            generated_ids = outputs[0][prompt_tokens:]
-            raw_text = processor.tokenizer.decode(generated_ids, skip_special_tokens=True).strip()
-            generated_tokens = int(generated_ids.numel())
-            segments = parse_canonical_transcript(raw_text)
-            return {
-                "rawText": raw_text,
-                "segments": segments,
-                "generatedTokens": generated_tokens,
-                "promptTokens": prompt_tokens,
-                "elapsedSeconds": time.monotonic() - started,
-                "backend": "transformers",
-            }
+            return self._infer_loaded(chunk_audio, chunk, prompt)
         except WorkerError:
             raise
         except torch.OutOfMemoryError as exc:
@@ -957,11 +1066,9 @@ class MossInferenceEngine:
             ) from exc
         finally:
             try:
-                del audio
-            except UnboundLocalError:
-                pass
-            try:
-                gc.collect()
+                # _infer_loaded's tensor-owning frame has ended, so this now
+                # really releases unused cached blocks for the browser/desktop
+                # between chunks while keeping the model itself resident.
                 if torch.cuda.is_available():
                     torch.cuda.empty_cache()
             except Exception:
@@ -1158,7 +1265,7 @@ def _job_signature(request: Mapping[str, Any], audio_sha256: str, prompt: str) -
         "overlapSeconds": request["overlapSeconds"],
         "maxNewTokens": request["maxNewTokens"],
         "encoderBatchSize": request["encoderBatchSize"],
-        "offloadCache": request["offloadCache"],
+        "cacheMode": request["cacheMode"],
         "mock": bool(request["mockInference"]),
     }
     encoded = json.dumps(material, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
@@ -1293,6 +1400,7 @@ def run_request(raw_request: Mapping[str, Any], emit: EventSink = emit_ndjson) -
     )
     engine = MockInferenceEngine(request) if mock_enabled else MossInferenceEngine(request, emit)
     chunk_results: list[dict[str, Any]] = []
+    resumed_flags: list[bool] = []
 
     for chunk in chunks:
         checkpoint_path = checkpoint_dir / f"chunk-{chunk.index:04d}.json"
@@ -1341,6 +1449,28 @@ def run_request(raw_request: Mapping[str, Any], emit: EventSink = emit_ndjson) -
                     "generatedTokens": int(inference.get("generatedTokens", 0)),
                     "promptTokens": int(inference.get("promptTokens", 0)),
                     "elapsedSeconds": round(float(inference.get("elapsedSeconds", 0.0)), 6),
+                    "audioLoadSeconds": round(float(inference.get("audioLoadSeconds", 0.0)), 6),
+                    "processorSeconds": round(float(inference.get("processorSeconds", 0.0)), 6),
+                    "generationSeconds": round(float(inference.get("generationSeconds", 0.0)), 6),
+                    "generatedTokensPerSecond": round(
+                        float(inference.get("generatedTokensPerSecond", 0.0)),
+                        6,
+                    ),
+                    "cacheMode": str(inference.get("cacheMode", request["cacheMode"])),
+                    "cacheFallback": bool(inference.get("cacheFallback", False)),
+                    "encoderBatchSize": int(
+                        inference.get("encoderBatchSize", request["encoderBatchSize"])
+                    ),
+                    "freeGpuBeforeMiB": round(float(inference.get("freeGpuBeforeMiB", 0.0)), 3),
+                    "totalGpuMiB": round(float(inference.get("totalGpuMiB", 0.0)), 3),
+                    "peakGpuAllocatedMiB": round(
+                        float(inference.get("peakGpuAllocatedMiB", 0.0)),
+                        3,
+                    ),
+                    "peakGpuReservedMiB": round(
+                        float(inference.get("peakGpuReservedMiB", 0.0)),
+                        3,
+                    ),
                     "backend": str(inference.get("backend", "unknown")),
                     "validation": validation,
                 }
@@ -1352,6 +1482,7 @@ def run_request(raw_request: Mapping[str, Any], emit: EventSink = emit_ndjson) -
                     pass
 
         chunk_results.append(chunk_result)
+        resumed_flags.append(resumed)
         progress = 0.08 + 0.82 * ((chunk.index + 1) / max(1, len(chunks)))
         emit(
             {
@@ -1368,7 +1499,7 @@ def run_request(raw_request: Mapping[str, Any], emit: EventSink = emit_ndjson) -
     emit({"type": "progress", "requestId": request_id, "phase": "merging", "progress": 0.92})
     segments, warnings, label_mappings = merge_chunk_results(chunk_results)
     chunk_summaries = []
-    for chunk_result, label_mapping in zip(chunk_results, label_mappings):
+    for chunk_result, label_mapping, resumed in zip(chunk_results, label_mappings, resumed_flags):
         chunk_summaries.append(
             {
                 "index": chunk_result["index"],
@@ -1377,12 +1508,39 @@ def run_request(raw_request: Mapping[str, Any], emit: EventSink = emit_ndjson) -
                 "segmentCount": len(chunk_result.get("segments", [])),
                 "generatedTokens": chunk_result.get("generatedTokens", 0),
                 "elapsedSeconds": chunk_result.get("elapsedSeconds", 0.0),
+                "generationSeconds": chunk_result.get("generationSeconds", 0.0),
+                "generatedTokensPerSecond": chunk_result.get("generatedTokensPerSecond", 0.0),
+                "cacheMode": chunk_result.get("cacheMode", request["cacheMode"]),
+                "cacheFallback": chunk_result.get("cacheFallback", False),
+                "encoderBatchSize": chunk_result.get(
+                    "encoderBatchSize",
+                    request["encoderBatchSize"],
+                ),
+                "freeGpuBeforeMiB": chunk_result.get("freeGpuBeforeMiB", 0.0),
+                "peakGpuAllocatedMiB": chunk_result.get("peakGpuAllocatedMiB", 0.0),
+                "peakGpuReservedMiB": chunk_result.get("peakGpuReservedMiB", 0.0),
+                "resumed": resumed,
                 "labelMapping": label_mapping,
                 "checkpointPath": str(checkpoint_dir / f"chunk-{int(chunk_result['index']):04d}.json"),
             }
         )
 
     covered_until = max((float(segment["end"]) for segment in segments), default=0.0)
+    # These totals describe the complete transcript job, including work stored
+    # in checkpoints from an earlier run. `resumedChunkCount` below separately
+    # makes the amount reused in this invocation explicit.
+    total_inference_seconds = sum(
+        float(chunk_result.get("elapsedSeconds", 0.0))
+        for chunk_result in chunk_results
+    )
+    total_generation_seconds = sum(
+        float(chunk_result.get("generationSeconds", 0.0))
+        for chunk_result in chunk_results
+    )
+    total_generated_tokens = sum(
+        int(chunk_result.get("generatedTokens", 0))
+        for chunk_result in chunk_results
+    )
     result = {
         "schemaVersion": RESULT_SCHEMA_VERSION,
         "requestId": request_id,
@@ -1406,6 +1564,47 @@ def run_request(raw_request: Mapping[str, Any], emit: EventSink = emit_ndjson) -
             "complete": True,
             "coveredUntil": round(covered_until, 6),
             "audioDuration": round(wav_info.duration_seconds, 6),
+        },
+        "performance": {
+            "totalInferenceSeconds": round(total_inference_seconds, 6),
+            "totalGenerationSeconds": round(total_generation_seconds, 6),
+            "totalGeneratedTokens": total_generated_tokens,
+            "generatedTokensPerSecond": round(
+                total_generated_tokens / total_generation_seconds
+                if total_generation_seconds > 0
+                else 0.0,
+                6,
+            ),
+            "audioRealtimeFactor": round(
+                total_inference_seconds / wav_info.duration_seconds
+                if wav_info.duration_seconds > 0
+                else 0.0,
+                6,
+            ),
+            "cacheModes": sorted(
+                {
+                    str(chunk_result.get("cacheMode", request["cacheMode"]))
+                    for chunk_result in chunk_results
+                }
+            ),
+            "cacheFallbackCount": sum(
+                1 for chunk_result in chunk_results if bool(chunk_result.get("cacheFallback", False))
+            ),
+            "resumedChunkCount": sum(1 for resumed in resumed_flags if resumed),
+            "peakGpuAllocatedMiB": round(
+                max(
+                    (float(chunk_result.get("peakGpuAllocatedMiB", 0.0)) for chunk_result in chunk_results),
+                    default=0.0,
+                ),
+                3,
+            ),
+            "peakGpuReservedMiB": round(
+                max(
+                    (float(chunk_result.get("peakGpuReservedMiB", 0.0)) for chunk_result in chunk_results),
+                    default=0.0,
+                ),
+                3,
+            ),
         },
         "warnings": warnings,
         "checkpointDirectory": str(checkpoint_dir),

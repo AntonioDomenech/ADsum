@@ -1,13 +1,21 @@
 using System.Globalization;
 using System.IO;
 using System.Text.RegularExpressions;
+using NAudio.Wave;
 
 namespace ADsum.Desktop.Services;
 
 public sealed partial class MeetingLibraryService
 {
-    public string RootDirectory =>
-        Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "ADsum", "Recordings");
+    public MeetingLibraryService(string? rootDirectory = null)
+    {
+        RootDirectory = rootDirectory ?? Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            "ADsum",
+            "Recordings");
+    }
+
+    public string RootDirectory { get; }
 
     public IReadOnlyList<MeetingLibraryItem> GetMeetings()
     {
@@ -28,14 +36,34 @@ public sealed partial class MeetingLibraryService
         var info = new DirectoryInfo(directory);
         var folderName = info.Name;
         var (startedAt, topic) = ParseFolderName(folderName);
+        var recordingPath = FindRecordingPath(directory, topic);
         return new MeetingLibraryItem(
             topic,
             directory,
             startedAt,
             info.LastWriteTime,
-            FindRecordingPath(directory, topic),
+            recordingPath,
+            ReadRecordingDuration(recordingPath),
             FindTranscriptPath(directory, topic),
             FindNotesPath(directory, topic));
+    }
+
+    private static TimeSpan? ReadRecordingDuration(string? recordingPath)
+    {
+        if (string.IsNullOrWhiteSpace(recordingPath))
+        {
+            return null;
+        }
+
+        try
+        {
+            using var reader = new WaveFileReader(recordingPath);
+            return reader.TotalTime;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or FormatException)
+        {
+            return null;
+        }
     }
 
     private static (DateTime? StartedAt, string Topic) ParseFolderName(string folderName)

@@ -2,7 +2,17 @@
 
 torch==2.11.0+cu128
 torchaudio==2.11.0+cu128
-transformers==5.13.1
+faster-whisper==1.2.1
+ctranslate2==4.8.1
+av==18.0.0
+onnxruntime==1.28.0
+tokenizers==0.22.2
+pyannote.audio==4.0.7
+pyannote-core==6.0.1
+pyannote-database==6.1.1
+pyannote-metrics==4.1
+pyannote-pipeline==4.0.0
+torchcodec==0.14.0
 huggingface-hub==1.26.0
 safetensors==0.8.0
 numpy==2.4.6

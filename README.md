@@ -12,31 +12,33 @@ Run it from source:
 dotnet run --project .\src\ADsum.Desktop\ADsum.Desktop.csproj
 ```
 
-The desktop app targets .NET 10 on Windows. Transcription is local: [MOSS-Transcribe-Diarize 0.9B](https://github.com/OpenMOSS/MOSS-Transcribe-Diarize) writes the words, timestamps, and anonymous speaker labels such as `Speaker A`, `Speaker B`, and `Speaker C`. Meeting audio is not sent to an OpenAI transcription API.
+The desktop app targets .NET 10 on Windows. Transcription is local: [faster-whisper](https://github.com/SYSTRAN/faster-whisper) runs multilingual Whisper `large-v3-turbo`, and [pyannote Community-1](https://huggingface.co/pyannote/speaker-diarization-community-1) assigns meeting-global anonymous labels such as `Speaker A`, `Speaker B`, and `Speaker C`. Meeting audio is not sent to an OpenAI transcription API.
 
-MOSS runs only after recording has stopped and the user asks ADsum to create a transcript. It is not loaded while a meeting is being recorded, so the recorder keeps the computer's memory, GPU, and processor available for the meeting. Local MOSS jobs run one at a time. ADsum v3 also allows only one recording/transcription-capable process per Windows user and session, preventing a second desktop or `--transcribe-file` process from loading another model behind a meeting.
+Both models run only after recording has stopped and the user asks ADsum to create a transcript. They are not loaded during a meeting, so Teams, Zoom, Meet, and ADsum's recorder retain the computer's memory, GPU, and processor. Local speech jobs run one at a time, and a new recording immediately preempts an older transcription job.
 
-Install the private MOSS runtime once before the first local transcript:
+Install the private local speech runtime once before the first transcript. Community-1 is free and local, but its publisher requires the account owner to accept its Hugging Face terms once and provide a read-only token for the download:
 
 ```powershell
-# From an extracted v3 release
-.\setup_moss_runtime.ps1
+# From an extracted release; token input is masked
+.\setup_moss_runtime.ps1 -InstallDiarization -IAcceptPyannoteCommunity1Terms -PromptForHuggingFaceToken
 
 # Or from this repository
-.\scripts\setup_moss_runtime.ps1
+.\scripts\setup_moss_runtime.ps1 -InstallDiarization -IAcceptPyannoteCommunity1Terms -PromptForHuggingFaceToken
 ```
 
-The setup downloads a pinned Python 3.12 runtime, CUDA 12.8 PyTorch packages, the audited OpenMOSS source, and the pinned model snapshot. They are stored under `%LOCALAPPDATA%\ADsum\MossRuntime`; the script does not change the normal system Python or `PATH`. Check an existing installation without changing it:
+Accept the terms at the [Community-1 model page](https://huggingface.co/pyannote/speaker-diarization-community-1) and create the token at [Hugging Face settings](https://huggingface.co/settings/tokens). The setup prompt masks the token. It exists only in the setup process and is cleared after the gated download; ADsum does not save it. The pinned runtime and model snapshots are stored under `%LOCALAPPDATA%\ADsum\MossRuntime`; this compatibility folder name is retained from v3.0. The script does not change the system Python or `PATH`.
+
+Check the complete installation without changing it:
 
 ```powershell
-.\setup_moss_runtime.ps1 -Doctor
+.\setup_moss_runtime.ps1 -Doctor -RequireDiarization
 ```
 
-The model is intentionally not embedded in the ADsum release ZIP. This keeps the application download small and makes the model revision explicit. See [the v3 local MOSS guide](docs/v3-local-moss.md) for exact revisions, installation details, the long-meeting design, validation, and troubleshooting.
+Model weights are intentionally not embedded in the ADsum release ZIP. See [the local speech guide](docs/v3-local-moss.md) for exact revisions, setup, benchmark evidence, validation, and troubleshooting.
 
-MOSS advertises contexts up to 90 minutes on larger hardware, but ADsum uses the capacity actually measured on the target 8 GB RTX 5050 laptop: five-minute windows with a 30-second overlap. Each new window advances by 4½ minutes. The shared audio helps ADsum join boundary sentences and map speaker labels, while sequential windows let recordings continue well beyond 90 minutes without loading the whole meeting into GPU memory. Longer windows remain an expert override for GPUs with more memory.
+ADsum no longer restarts speaker identity every five minutes. faster-whisper consumes the completed recording using internal VAD and batching, while Community-1 performs one logical whole-meeting diarization and globally clusters voice embeddings before assigning A/B/C. A speaker can leave for a long time and still return under the same label. On the target RTX 5050 laptop, a real 1:30:17 meeting completed ASR plus diarization in about 6 minutes 25 seconds. ADsum places no 20-minute recording or transcription cutoff on longer meetings.
 
-OpenAI remains optional for **meeting notes**, not transcription. A key saved in the app, `ADSUM_OPENAI_API_KEY` / `OPENAI_API_KEY`, or a local `.env` file can be used to create a summary, important points, tasks or next steps, and decisions from the local transcript. Meeting minutes default to `gpt-5.5`; set `ADSUM_OPENAI_NOTES_MODEL=gpt-5.4-mini` for a lower-cost notes model. If the short OpenAI meeting-title request is unavailable, ADsum uses its existing local title fallback.
+OpenAI remains optional for **meeting notes**, not transcription. A key saved in the app, `ADSUM_OPENAI_API_KEY` / `OPENAI_API_KEY`, or a local `.env` file can be used to create a summary, important points, tasks or next steps, and decisions from the local transcript. Meeting minutes default to `gpt-5.5`; set `ADSUM_OPENAI_NOTES_MODEL=gpt-5.4-mini` for a lower-cost notes model. If the short OpenAI meeting-title request is unavailable, ADsum uses its existing local title fallback. Set `ADSUM_LOCAL_TOPIC_ONLY=1` to force that local title path and prevent the optional title request from sending a transcript excerpt.
 
 Build a Windows release artifact:
 
@@ -46,10 +48,10 @@ Build a Windows release artifact:
 
 The build creates:
 
-- `dist\ADsum-v3.0.0-windows-x64.zip`
-- `dist\ADsum-v3.0.0-windows-x64.zip.sha256`
+- `dist\ADsum-v3.1.1-windows-x64.zip`
+- `dist\ADsum-v3.1.1-windows-x64.zip.sha256`
 
-The ZIP is a self-contained Windows bundle that can be attached to a GitHub Release. It contains the .NET runtime, MOSS worker, pinned requirements, setup script, and documentation, but no model weights. The checksum file lets a downloader verify that the ZIP arrived unchanged.
+The ZIP is a self-contained Windows bundle that can be attached to a GitHub Release. It contains the .NET runtime, local speech worker, pinned requirements, setup script, and documentation, but no model weights. The checksum file lets a downloader verify that the ZIP arrived unchanged.
 
 Each meeting is stored under `%LOCALAPPDATA%\ADsum\Recordings` in a folder named `yyyyMMdd-HHmm-topic`. The final topic-named recording is mixed from microphone and system audio with bounded level balancing so quieter room speech is less likely to be masked by louder computer audio. The folder contains:
 
@@ -59,11 +61,11 @@ Each meeting is stored under `%LOCALAPPDATA%\ADsum\Recordings` in a folder named
 
 The meeting-topic field is optional. After ADsum transcribes an unnamed meeting, it generates a short topic from the transcript, renames the timestamped recording folder, and gives both the audio and transcript matching topic filenames. A topic entered before recording is preserved and is applied to the files when the transcript is created. Existing meetings that still contain `recording.wav` remain supported. If the short OpenAI naming request is unavailable, ADsum derives a local keyword-based topic so the recording does not remain `Untitled meeting`.
 
-The desktop app also includes a **Library** tab for browsing previous meetings, previewing saved minutes/transcripts, opening the recording or folder directly, creating a local transcript for an older recording, and creating notes from an existing transcript.
+The desktop app also includes a **Library** tab for browsing previous meetings, seeing each recording's duration, previewing saved minutes/transcripts, opening the recording or folder directly, creating a local transcript for an older recording, and creating notes from an existing transcript.
 
-Recording has priority over local transcription. ADsum does not start a MOSS job while recording. If the user starts another recording while a local transcript is being created, ADsum stops the worker, preserves its completed chunk checkpoints, waits until recording ends, and then resumes the transcript. Local MOSS work is serialized so two model copies cannot exhaust GPU memory. The existing per-meeting write lock still protects transcripts, notes, and folders from conflicting updates. The status badge and Library continue to show the current processing step.
+Recording has priority over local transcription. If a new recording starts while a transcript is being created, ADsum stops the worker and waits until recording ends. A completed ASR stage is atomically checkpointed, so the resumed job can continue with global diarization instead of rewriting every word. Local speech work is serialized so two model copies cannot exhaust GPU memory. The existing per-meeting write lock still protects transcripts, notes, and folders from conflicting updates. The status badge and Library show the current stage and elapsed time.
 
-An audio file containing only digital silence or microscopic PCM rounding residue produces a successful empty transcript without loading MOSS. Non-silent model output must still contain canonical timestamps and speaker labels; malformed speech output is rejected instead of being silently accepted.
+Non-silent model output must contain valid timestamps and speaker labels; malformed or incomplete output is rejected rather than silently saved.
 
 ## Features
 
@@ -72,7 +74,7 @@ An audio file containing only digital silence or microscopic PCM rounding residu
 - Streaming-friendly recording pipeline that writes directly to disk.
 - In-app meeting library for reviewing previous recordings, transcripts, and minutes.
 - Storage layer backed by SQLite for recording metadata, transcripts, and notes.
-- Local MOSS speaker-aware transcription with timestamps; mock inference is reserved for automated offline tests.
+- Fast local multilingual transcription plus whole-meeting speaker diarization and overlap diagnostics; mock inference is reserved for automated offline tests.
 - OpenAI meeting-minutes generation for summaries, discussion points, next steps, and decisions.
 - Typer-powered CLI for device discovery, recording, transcription, and note generation.
 
@@ -184,7 +186,7 @@ Environment variables customise behaviour via `pydantic` settings (prefix `ADSUM
   `ADSUM_FFMPEG_BINARY`. Leave this setting empty if you prefer to manage FFmpeg manually.
 - `ADSUM_DEFAULT_MIC_DEVICE`: Preferred microphone device identifier remembered between sessions.
 - `ADSUM_DEFAULT_SYSTEM_DEVICE`: Preferred system audio device identifier remembered between sessions.
-- `ADSUM_OPENAI_TRANSCRIPTION_MODEL`: Model used by the legacy Python CLI's optional OpenAI transcription backend. The v3 Windows desktop app uses local MOSS.
+- `ADSUM_OPENAI_TRANSCRIPTION_MODEL`: Model used by the legacy Python CLI's optional OpenAI transcription backend. The Windows desktop app uses the local faster-whisper and Community-1 pipeline.
 - `ADSUM_OPENAI_NOTES_MODEL`: Model used for OpenAI meeting minutes. Defaults to `gpt-5.5`; use `gpt-5.4-mini` for lower-cost long-meeting notes.
 - `ADSUM_OPENAI_MINUTES_MODEL`: Alias for `ADSUM_OPENAI_NOTES_MODEL`.
 - `ADSUM_OPENAI_API_KEY`: Optional API key forwarded to the OpenAI client (falls back to `OPENAI_API_KEY`).
@@ -196,7 +198,7 @@ The legacy Python CLI ships with multiple transcription providers and defaults t
 
 - **CLI** – pass `--transcription-backend openai` (or your preferred backend) to `adsum record` or `adsum ui` commands.
 
-If the Python CLI uses the OpenAI provider, make sure an API key is available. The v3 .NET desktop app instead uses the separately installed private MOSS runtime described above.
+If the Python CLI uses the OpenAI provider, make sure an API key is available. The .NET desktop app instead uses the separately installed private local speech runtime described above.
 
 ## Development
 

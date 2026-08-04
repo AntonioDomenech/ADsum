@@ -1,8 +1,8 @@
 namespace ADsum.Desktop.Services;
 
 /// <summary>
-/// Gives audio recording priority over local MOSS inference.
-/// Only one MOSS lease can exist in this process, and beginning a recording
+/// Gives audio recording priority over local speech inference.
+/// Only one local speech lease can exist in this process, and beginning a recording
 /// cancels the active lease and waits for the worker to release it.
 /// </summary>
 public sealed class RecordingMossResourceCoordinator

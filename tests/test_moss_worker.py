@@ -86,6 +86,95 @@ def test_extract_wav_chunk_streams_exact_interval(tmp_path: Path) -> None:
     assert destination.stat().st_size < source.stat().st_size
 
 
+def test_cache_mode_defaults_to_fast_auto_with_legacy_compatibility(tmp_path: Path) -> None:
+    audio = tmp_path / "cache-mode.wav"
+    _write_wav(audio, 1.0)
+    base = {
+        "audioPath": str(audio),
+        "outputPath": str(tmp_path / "result.json"),
+    }
+
+    assert worker.normalize_request(base)["cacheMode"] == "auto"
+    assert worker.normalize_request({**base, "cacheMode": "dynamic"})["cacheMode"] == "gpu"
+    assert worker.normalize_request({**base, "offloadCache": True})["cacheMode"] == "offloaded"
+    assert worker.normalize_request({**base, "offloadCache": False})["cacheMode"] == "gpu"
+
+
+def test_invalid_cache_mode_is_rejected(tmp_path: Path) -> None:
+    audio = tmp_path / "invalid-cache-mode.wav"
+    _write_wav(audio, 1.0)
+
+    with pytest.raises(worker.WorkerError) as error:
+        worker.normalize_request(
+            {
+                "audioPath": str(audio),
+                "outputPath": str(tmp_path / "result.json"),
+                "cacheMode": "mystery",
+            }
+        )
+
+    assert error.value.code == "invalid_cache_mode"
+
+
+def test_auto_cache_oom_retries_offloaded_and_keeps_using_it(monkeypatch) -> None:
+    engine = object.__new__(worker.MossInferenceEngine)
+    engine.request = {"cacheMode": "auto"}
+    engine._force_offloaded_cache = False
+    events: list[dict[str, object]] = []
+    engine.emit = events.append
+    calls: list[str] = []
+    cleanup_calls: list[str] = []
+
+    def generate_once(_inputs, _max_new_tokens: int, cache_mode: str):
+        calls.append(cache_mode)
+        if calls == ["gpu"]:
+            raise RuntimeError("CUDA out of memory while allocating the dynamic cache")
+        return f"generated-with-{cache_mode}"
+
+    class FakeCuda:
+        @staticmethod
+        def empty_cache() -> None:
+            cleanup_calls.append("empty_cache")
+
+    class FakeTorch:
+        cuda = FakeCuda()
+
+    engine._generate_once = generate_once
+    engine._torch = FakeTorch()
+    monkeypatch.setattr(worker.gc, "collect", lambda: cleanup_calls.append("gc"))
+    chunk = worker.ChunkSpec(index=3, start=810.0, end=1110.0)
+
+    first = engine._generate_with_cache_fallback({}, 4096, chunk)
+    second = engine._generate_with_cache_fallback({}, 4096, chunk)
+
+    assert first == ("generated-with-offloaded", "offloaded", True)
+    assert second == ("generated-with-offloaded", "offloaded", False)
+    assert calls == ["gpu", "offloaded", "offloaded"]
+    assert cleanup_calls == ["gc", "empty_cache"]
+    assert engine._force_offloaded_cache is True
+    assert events == [
+        {
+            "type": "progress",
+            "phase": "cache_fallback_offloaded",
+            "chunkIndex": 3,
+        }
+    ]
+
+
+def test_forced_gpu_cache_does_not_hide_out_of_memory() -> None:
+    engine = object.__new__(worker.MossInferenceEngine)
+    engine.request = {"cacheMode": "gpu"}
+    engine._force_offloaded_cache = False
+    engine.emit = lambda _event: None
+    engine._generate_once = lambda *_args: (_ for _ in ()).throw(
+        RuntimeError("CUDA out of memory in forced GPU mode")
+    )
+    chunk = worker.ChunkSpec(index=0, start=0.0, end=300.0)
+
+    with pytest.raises(RuntimeError, match="CUDA out of memory"):
+        engine._generate_with_cache_fallback({}, 4096, chunk)
+
+
 def test_effective_silence_peak_is_deliberately_tiny(tmp_path: Path) -> None:
     digital_silence = tmp_path / "digital-silence.wav"
     quantization_residue = tmp_path / "quantization-residue.wav"
@@ -272,6 +361,9 @@ def test_mock_cli_writes_result_and_resumes_checkpoints(tmp_path: Path) -> None:
     assert result["model"]["revision"] == worker.MODEL_REVISION
     assert result["coverage"]["complete"] is True
     assert len(result["chunks"]) == 2
+    assert result["performance"]["cacheModes"] == ["auto"]
+    assert result["performance"]["cacheFallbackCount"] == 0
+    assert result["performance"]["totalGeneratedTokens"] > 0
     assert [segment["text"] for segment in result["segments"]].count("Shared turn") == 1
     assert next(segment for segment in result["segments"] if segment["text"] == "Shared turn")["speaker"] == "S02"
 
@@ -287,6 +379,13 @@ def test_mock_cli_writes_result_and_resumes_checkpoints(tmp_path: Path) -> None:
     completed_chunks = [event for event in resumed_events if event["type"] == "chunk_completed"]
     assert completed_chunks
     assert all(event["resumed"] is True for event in completed_chunks)
+    resumed_result = json.loads(result_path.read_text(encoding="utf-8"))
+    assert resumed_result["performance"]["resumedChunkCount"] == 2
+    assert all(chunk["resumed"] is True for chunk in resumed_result["chunks"])
+    assert (
+        resumed_result["performance"]["totalInferenceSeconds"]
+        == result["performance"]["totalInferenceSeconds"]
+    )
 
 
 def test_import_does_not_load_torch() -> None:

@@ -35,6 +35,12 @@ public partial class App : Application
             return;
         }
 
+        if (HasArgument(e.Args, "--transcribe-meeting"))
+        {
+            await TranscribeMeetingAsync(e.Args);
+            return;
+        }
+
         if (HasArgument(e.Args, "--transcribe-file"))
         {
             await TranscribeFileAsync(e.Args);
@@ -59,7 +65,9 @@ public partial class App : Application
 
     private static bool RequiresExclusiveInstance(string[] args)
     {
-        if (HasArgument(args, "--transcribe-file") || HasArgument(args, "--smoke-test"))
+        if (HasArgument(args, "--transcribe-meeting") ||
+            HasArgument(args, "--transcribe-file") ||
+            HasArgument(args, "--smoke-test"))
         {
             return true;
         }
@@ -73,12 +81,23 @@ public partial class App : Application
             "Another ADsum v3 process is already using recording or local transcription. " +
             "Use that window, or wait for its offline transcription to finish.";
 
-        if (HasArgument(args, "--transcribe-file") || HasArgument(args, "--smoke-test"))
+        if (HasArgument(args, "--transcribe-meeting") ||
+            HasArgument(args, "--transcribe-file") ||
+            HasArgument(args, "--smoke-test"))
         {
-            var defaultName = HasArgument(args, "--transcribe-file")
-                ? "adsum-transcription-result.json"
-                : "adsum-smoke-result.json";
+            var defaultName = HasArgument(args, "--transcribe-meeting")
+                ? "adsum-meeting-transcription-result.json"
+                : HasArgument(args, "--transcribe-file")
+                    ? "adsum-transcription-result.json"
+                    : "adsum-smoke-result.json";
             var resultPath = ArgValue(args, "--result") ?? Path.Combine(Path.GetTempPath(), defaultName);
+            var meetingDirectory = ArgValue(args, "--transcribe-meeting");
+            if (!string.IsNullOrWhiteSpace(meetingDirectory) &&
+                Directory.Exists(meetingDirectory) &&
+                IsWithinDirectory(resultPath, meetingDirectory))
+            {
+                resultPath = Path.Combine(Path.GetTempPath(), defaultName);
+            }
             try
             {
                 EnsureParentDirectory(resultPath);
@@ -101,6 +120,126 @@ public partial class App : Application
             MessageBoxButton.OK,
             MessageBoxImage.Information);
         Current.Shutdown(2);
+    }
+
+    private static async Task TranscribeMeetingAsync(string[] args)
+    {
+        var defaultResultPath = Path.Combine(Path.GetTempPath(), "adsum-meeting-transcription-result.json");
+        var resultPath = ArgValue(args, "--result") ?? defaultResultPath;
+        try
+        {
+            var requestedDirectory = ArgValue(args, "--transcribe-meeting")
+                ?? throw new InvalidOperationException("Pass an ADsum meeting folder after --transcribe-meeting.");
+            var meetingDirectory = Path.GetFullPath(requestedDirectory);
+            if (!Directory.Exists(meetingDirectory))
+            {
+                throw new DirectoryNotFoundException($"The ADsum meeting folder was not found: '{meetingDirectory}'.");
+            }
+
+            if (IsWithinDirectory(resultPath, meetingDirectory))
+            {
+                resultPath = defaultResultPath;
+                throw new InvalidOperationException(
+                    "--result must be outside the meeting folder because ADsum may rename that folder after transcription.");
+            }
+            var diagnosticsPath = ArgValue(args, "--diagnostics");
+            if (!string.IsNullOrWhiteSpace(diagnosticsPath))
+            {
+                diagnosticsPath = Path.GetFullPath(diagnosticsPath);
+                EnsureOutputOutsideMeeting(diagnosticsPath, meetingDirectory, "--diagnostics");
+                if (SamePath(resultPath, diagnosticsPath))
+                {
+                    throw new InvalidOperationException(
+                        "--result and --diagnostics must point to different files.");
+                }
+            }
+
+            var item = new MeetingLibraryService()
+                .GetMeetings()
+                .FirstOrDefault(candidate => SamePath(candidate.DirectoryPath, meetingDirectory))
+                ?? throw new InvalidOperationException(
+                    "The folder is not an ADsum meeting in the local Library.");
+            if (item.RecordingPath is null || !File.Exists(item.RecordingPath))
+            {
+                throw new FileNotFoundException("The selected ADsum meeting has no saved recording.", item.RecordingPath);
+            }
+
+            var mixedMetrics = MeetingRecorder.MeasureWaveFile(item.RecordingPath);
+            var source = new RecordingResult(
+                item.Topic,
+                item.DirectoryPath,
+                item.StartedAt ?? item.LastWriteTime,
+                mixedMetrics.Duration,
+                null,
+                null,
+                item.RecordingPath,
+                item.TranscriptPath,
+                item.MinutesPath,
+                new TrackMetrics(null, TimeSpan.Zero, 0, 0),
+                new TrackMetrics(null, TimeSpan.Zero, 0, 0),
+                mixedMetrics);
+
+            var settings = new SettingsStore();
+            using var transcription = new MossTranscriptionService(
+                allowExternalJobFallback: true);
+            var transcript = await transcription.TranscribeAsync(
+                item.RecordingPath,
+                diagnosticsPath: diagnosticsPath);
+
+            string? generatedTopic = null;
+            var namedLocally = false;
+            if (MeetingArtifactStore.NeedsGeneratedTopic(source.Name))
+            {
+                if (settings.UseLocalTopicNaming)
+                {
+                    generatedTopic = MeetingTopicFallback.FromTranscript(transcript, source.StartedAt);
+                    namedLocally = true;
+                }
+                else
+                {
+                    try
+                    {
+                        generatedTopic = await new OpenAiMeetingMinutesService().CreateTopicAsync(
+                            transcript,
+                            settings.OpenAiKey,
+                            settings.NotesModel);
+                    }
+                    catch
+                    {
+                        generatedTopic = MeetingTopicFallback.FromTranscript(transcript, source.StartedAt);
+                        namedLocally = true;
+                    }
+                }
+            }
+
+            var saved = MeetingArtifactStore.SaveTranscript(source, transcript, generatedTopic);
+            var payload = new
+            {
+                ok = true,
+                sessionDirectory = saved.SessionDirectory,
+                recordingPath = saved.MixedPath,
+                transcriptPath = saved.TranscriptPath,
+                diagnosticsPath,
+                topic = saved.Name,
+                topicNamedLocally = namedLocally,
+                startedAt = saved.StartedAt,
+                durationSeconds = saved.Duration.TotalSeconds
+            };
+            EnsureParentDirectory(resultPath);
+            await File.WriteAllTextAsync(
+                resultPath,
+                JsonSerializer.Serialize(payload, new JsonSerializerOptions { WriteIndented = true }));
+            Current.Shutdown(0);
+        }
+        catch (Exception ex)
+        {
+            var payload = new { ok = false, error = ex.ToString() };
+            EnsureParentDirectory(resultPath);
+            await File.WriteAllTextAsync(
+                resultPath,
+                JsonSerializer.Serialize(payload, new JsonSerializerOptions { WriteIndented = true }));
+            Current.Shutdown(1);
+        }
     }
 
     private static async Task CreateMinutesFileAsync(string[] args)
@@ -134,7 +273,8 @@ public partial class App : Application
         {
             var audioPath = ArgValue(args, "--transcribe-file")
                 ?? throw new InvalidOperationException("Pass an audio path after --transcribe-file.");
-            using var service = new MossTranscriptionService();
+            using var service = new MossTranscriptionService(
+                allowExternalJobFallback: true);
             var text = await service.TranscribeAsync(audioPath);
             var payload = new { ok = true, text };
             EnsureParentDirectory(resultPath);
@@ -255,4 +395,28 @@ public partial class App : Application
             Directory.CreateDirectory(directory);
         }
     }
+
+    private static void EnsureOutputOutsideMeeting(string path, string meetingDirectory, string argumentName)
+    {
+        if (IsWithinDirectory(path, meetingDirectory))
+        {
+            throw new InvalidOperationException(
+                $"{argumentName} must be outside the meeting folder because ADsum may rename that folder after transcription.");
+        }
+    }
+
+    private static bool IsWithinDirectory(string path, string directory)
+    {
+        var fullPath = Path.GetFullPath(path);
+        var fullDirectory = Path.GetFullPath(directory)
+            .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        return SamePath(fullPath, fullDirectory) ||
+            fullPath.StartsWith(fullDirectory + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool SamePath(string first, string second) =>
+        string.Equals(
+            Path.GetFullPath(first).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar),
+            Path.GetFullPath(second).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar),
+            StringComparison.OrdinalIgnoreCase);
 }

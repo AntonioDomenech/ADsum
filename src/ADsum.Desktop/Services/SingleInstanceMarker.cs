@@ -1,7 +1,7 @@
 namespace ADsum.Desktop.Services;
 
 /// <summary>
-/// Keeps recording and local MOSS work inside one ADsum v3 process.
+/// Keeps recording and local speech work inside one ADsum v3 process.
 ///
 /// The named mutex is deliberately used only as a kernel-object existence
 /// marker. It is never acquired, so there is no thread-affine ownership to

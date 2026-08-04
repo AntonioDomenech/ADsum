@@ -4,13 +4,13 @@ param()
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
-$Version = "3.0.0"
+$Version = "3.1.1"
 $Root = (Resolve-Path (Split-Path -Parent $PSScriptRoot)).Path
 $ProjectPath = Join-Path $Root "src\ADsum.Desktop\ADsum.Desktop.csproj"
 $PyprojectPath = Join-Path $Root "pyproject.toml"
 $SetupScriptPath = Join-Path $Root "scripts\setup_moss_runtime.ps1"
 $MossSourceDirectory = Join-Path $Root "src\ADsum.Desktop\Moss"
-$MossWorkerPath = Join-Path $MossSourceDirectory "moss_worker.py"
+$LocalSpeechWorkerPath = Join-Path $MossSourceDirectory "local_speech_worker.py"
 $MossRequirementsPath = Join-Path $MossSourceDirectory "requirements.txt"
 $V3GuidePath = Join-Path $Root "docs\v3-local-moss.md"
 $DistDirectory = Join-Path $Root "dist"
@@ -24,7 +24,7 @@ if (Test-Path -LiteralPath "C:\Program Files\dotnet\dotnet.exe") {
     $Dotnet = "C:\Program Files\dotnet\dotnet.exe"
 }
 
-foreach ($requiredPath in @($ProjectPath, $PyprojectPath, $SetupScriptPath, $MossWorkerPath, $MossRequirementsPath, $V3GuidePath)) {
+foreach ($requiredPath in @($ProjectPath, $PyprojectPath, $SetupScriptPath, $LocalSpeechWorkerPath, $MossRequirementsPath, $V3GuidePath)) {
     if (-not (Test-Path -LiteralPath $requiredPath)) {
         throw "Required release input is missing: $requiredPath"
     }
@@ -66,11 +66,11 @@ try {
         throw "dotnet publish failed with exit code $LASTEXITCODE"
     }
 
-    $PublishedWorker = Join-Path $PublishDirectory "Moss\moss_worker.py"
+    $PublishedLocalSpeechWorker = Join-Path $PublishDirectory "Moss\local_speech_worker.py"
     $PublishedRequirements = Join-Path $PublishDirectory "Moss\requirements.txt"
-    foreach ($publishedPath in @($PublishedWorker, $PublishedRequirements)) {
+    foreach ($publishedPath in @($PublishedLocalSpeechWorker, $PublishedRequirements)) {
         if (-not (Test-Path -LiteralPath $publishedPath)) {
-            throw "The MOSS runtime support file was not published: $publishedPath"
+            throw "The local transcription runtime support file was not published: $publishedPath"
         }
     }
 
@@ -116,7 +116,7 @@ try {
         $EntryNames = @($Archive.Entries | ForEach-Object { $_.FullName.Replace("\", "/") })
         $RequiredEntries = @(
             "ADsum.exe",
-            "Moss/moss_worker.py",
+            "Moss/local_speech_worker.py",
             "Moss/requirements.txt",
             "setup_moss_runtime.ps1",
             "v3-local-moss.md",

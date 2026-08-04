@@ -1,4 +1,5 @@
 using System.IO;
+using System.Runtime.InteropServices;
 using NAudio.CoreAudioApi;
 using NAudio.Wave;
 using NAudio.Wave.SampleProviders;
@@ -16,6 +17,8 @@ public sealed class MeetingRecorder : IDisposable
     private const float MinimumTrackGain = 0.5f;
     private const float MaximumTrackGain = 10.0f;
     private const float MaximumNormalizedPeak = 0.95f;
+    private const int StreamingFrameBufferSize = 4096;
+    private const int StreamingMixBufferSize = 16384;
     private static readonly TimeSpan TimelineGapTolerance = TimeSpan.FromMilliseconds(40);
     private readonly AudioDeviceService _devices = new();
     private readonly object _micLock = new();
@@ -394,10 +397,10 @@ public sealed class MeetingRecorder : IDisposable
     {
         var tracks = paths
             .Where(path => File.Exists(path))
-            .Select(ReadMonoSamples)
-            .Where(track => track.Samples.Length > 0)
-            .Select(track => Resample(track.Samples, track.SampleRate, MixedSampleRate))
-            .Select(NormalizeForSpeechMix)
+            .Select(CreateStreamingTrack)
+            .Where(track => track is not null)
+            .Cast<StreamingTrack>()
+            .Select(AnalyzeSpeechTrack)
             .ToList();
 
         if (tracks.Count == 0)
@@ -405,75 +408,247 @@ public sealed class MeetingRecorder : IDisposable
             return;
         }
 
-        var length = tracks.Max(track => track.Length);
-        var mixed = new float[length];
-        foreach (var track in tracks)
-        {
-            for (var index = 0; index < track.Length; index++)
-            {
-                mixed[index] += track[index] / tracks.Count;
-            }
-        }
+        var outputFullPath = Path.GetFullPath(outputPath);
+        var outputDirectory = Path.GetDirectoryName(outputFullPath)
+            ?? throw new InvalidOperationException("The mixed recording needs a parent directory.");
+        Directory.CreateDirectory(outputDirectory);
+        DeleteStaleMixFiles(outputDirectory, Path.GetFileName(outputFullPath));
 
-        var peak = mixed.Select(Math.Abs).DefaultIfEmpty(0).Max();
-        if (peak > 0.98f)
-        {
-            var scale = 0.98f / peak;
-            for (var index = 0; index < mixed.Length; index++)
-            {
-                mixed[index] *= scale;
-            }
-        }
+        var temporaryStem = $".{Path.GetFileName(outputFullPath)}.{Guid.NewGuid():N}";
+        var floatMixPath = Path.Combine(outputDirectory, $"{temporaryStem}.float-mix.tmp");
+        var pendingWavePath = Path.Combine(outputDirectory, $"{temporaryStem}.pending-wave.tmp");
 
-        WritePcm16(outputPath, mixed, MixedSampleRate);
+        try
+        {
+            var mixedSampleCount = tracks.Max(track => track.TargetSampleCount);
+            var mixedPeak = WriteUnscaledFloatMix(tracks, floatMixPath, mixedSampleCount);
+            WriteFinalPcm16(floatMixPath, pendingWavePath, mixedSampleCount, mixedPeak);
+            File.Move(pendingWavePath, outputFullPath, true);
+        }
+        finally
+        {
+            TryDeleteFile(floatMixPath);
+            TryDeleteFile(pendingWavePath);
+        }
     }
 
-    private static float[] NormalizeForSpeechMix(float[] samples)
+    private static void DeleteStaleMixFiles(string outputDirectory, string outputFileName)
     {
-        var peak = samples.Select(Math.Abs).DefaultIfEmpty(0).Max();
+        try
+        {
+            var prefix = $".{outputFileName}.";
+            foreach (var path in Directory.EnumerateFiles(outputDirectory, "*", SearchOption.TopDirectoryOnly))
+            {
+                var name = Path.GetFileName(path);
+                if (!name.StartsWith(prefix, StringComparison.OrdinalIgnoreCase) ||
+                    (!name.EndsWith(".float-mix.tmp", StringComparison.OrdinalIgnoreCase) &&
+                     !name.EndsWith(".pending-wave.tmp", StringComparison.OrdinalIgnoreCase)))
+                {
+                    continue;
+                }
+
+                // A previous crash can leave hundreds of megabytes behind for
+                // a long meeting. ADsum permits only one recording-capable
+                // process, so no live mixer can own this output path here.
+                TryDeleteFile(path);
+            }
+        }
+        catch
+        {
+            // Stale-file cleanup is best effort and must not prevent Stop from
+            // preserving the newly recorded meeting.
+        }
+    }
+
+    private static StreamingTrack? CreateStreamingTrack(string path)
+    {
+        using var reader = new AudioFileReader(path);
+        var channels = reader.WaveFormat.Channels;
+        var sampleRate = reader.WaveFormat.SampleRate;
+        var blockAlign = reader.WaveFormat.BlockAlign;
+        if (channels <= 0 || sampleRate <= 0 || blockAlign <= 0)
+        {
+            return null;
+        }
+
+        var sourceSampleCount = reader.Length / blockAlign;
+        if (sourceSampleCount <= 0)
+        {
+            return null;
+        }
+
+        long targetSampleCount;
+        if (sampleRate == MixedSampleRate)
+        {
+            targetSampleCount = sourceSampleCount;
+        }
+        else
+        {
+            var duration = (double)sourceSampleCount / sampleRate;
+            targetSampleCount = Math.Max(1L, checked((long)Math.Round(duration * MixedSampleRate)));
+        }
+
+        return new StreamingTrack(path, sampleRate, sourceSampleCount, targetSampleCount, 1.0f);
+    }
+
+    private static StreamingTrack AnalyzeSpeechTrack(StreamingTrack track)
+    {
+        var peak = 0f;
+        using (var samples = new ResampledSampleReader(track))
+        {
+            while (samples.TryRead(out var sample))
+            {
+                peak = Math.Max(peak, Math.Abs(sample));
+            }
+        }
+
         if (peak < MinimumPeakForGain)
         {
-            return samples;
+            return track;
         }
 
         var activeThreshold = Math.Max(ActiveThresholdFloor, peak * ActivePeakFraction);
         double activeSum = 0;
-        var activeSamples = 0;
-        foreach (var sample in samples)
+        long activeSamples = 0;
+        using (var samples = new ResampledSampleReader(track))
         {
-            if (Math.Abs(sample) < activeThreshold)
+            while (samples.TryRead(out var sample))
             {
-                continue;
-            }
+                if (Math.Abs(sample) < activeThreshold)
+                {
+                    continue;
+                }
 
-            activeSum += sample * sample;
-            activeSamples++;
+                activeSum += sample * sample;
+                activeSamples++;
+            }
         }
 
         if (activeSamples == 0)
         {
-            return samples;
+            return track;
         }
 
         var activeRms = (float)Math.Sqrt(activeSum / activeSamples);
         if (activeRms < MinimumActiveRms)
         {
-            return samples;
+            return track;
         }
 
         var gain = Math.Clamp(TargetActiveRms / activeRms, MinimumTrackGain, MaximumTrackGain);
         gain = Math.Min(gain, MaximumNormalizedPeak / peak);
         if (Math.Abs(gain - 1.0f) < 0.01f)
         {
-            return samples;
+            gain = 1.0f;
         }
 
-        var normalized = new float[samples.Length];
-        for (var index = 0; index < samples.Length; index++)
+        return track with { Gain = gain };
+    }
+
+    private static float WriteUnscaledFloatMix(
+        IReadOnlyList<StreamingTrack> tracks,
+        string floatMixPath,
+        long mixedSampleCount)
+    {
+        var readers = tracks.Select(track => new ResampledSampleReader(track)).ToList();
+        var buffer = new float[StreamingMixBufferSize];
+        var buffered = 0;
+        var peak = 0f;
+
+        try
         {
-            normalized[index] = samples[index] * gain;
+            using var output = new FileStream(
+                floatMixPath,
+                FileMode.CreateNew,
+                FileAccess.Write,
+                FileShare.None,
+                StreamingMixBufferSize * sizeof(float),
+                FileOptions.SequentialScan);
+
+            for (long index = 0; index < mixedSampleCount; index++)
+            {
+                var mixedSample = 0f;
+                for (var trackIndex = 0; trackIndex < tracks.Count; trackIndex++)
+                {
+                    if (readers[trackIndex].TryRead(out var sample))
+                    {
+                        var normalizedSample = sample * tracks[trackIndex].Gain;
+                        mixedSample += normalizedSample / tracks.Count;
+                    }
+                }
+
+                peak = Math.Max(peak, Math.Abs(mixedSample));
+                buffer[buffered++] = mixedSample;
+                if (buffered == buffer.Length)
+                {
+                    WriteFloatBuffer(output, buffer, buffered);
+                    buffered = 0;
+                }
+            }
+
+            if (buffered > 0)
+            {
+                WriteFloatBuffer(output, buffer, buffered);
+            }
         }
-        return normalized;
+        finally
+        {
+            foreach (var reader in readers)
+            {
+                reader.Dispose();
+            }
+        }
+
+        return peak;
+    }
+
+    private static void WriteFloatBuffer(Stream output, float[] buffer, int sampleCount)
+    {
+        output.Write(MemoryMarshal.AsBytes(buffer.AsSpan(0, sampleCount)));
+    }
+
+    private static void WriteFinalPcm16(
+        string floatMixPath,
+        string pendingWavePath,
+        long sampleCount,
+        float mixedPeak)
+    {
+        var scale = mixedPeak > 0.98f ? 0.98f / mixedPeak : 1.0f;
+        var floatBytes = new byte[StreamingMixBufferSize * sizeof(float)];
+        var pcmBytes = new byte[StreamingMixBufferSize * sizeof(short)];
+
+        using var input = new FileStream(
+            floatMixPath,
+            FileMode.Open,
+            FileAccess.Read,
+            FileShare.Read,
+            floatBytes.Length,
+            FileOptions.SequentialScan);
+        using var writer = new WaveFileWriter(pendingWavePath, new WaveFormat(MixedSampleRate, 16, 1));
+
+        var remaining = sampleCount;
+        while (remaining > 0)
+        {
+            var samplesThisPass = (int)Math.Min(StreamingMixBufferSize, remaining);
+            var bytesThisPass = samplesThisPass * sizeof(float);
+            input.ReadExactly(floatBytes.AsSpan(0, bytesThisPass));
+
+            var floatSamples = MemoryMarshal.Cast<byte, float>(floatBytes.AsSpan(0, bytesThisPass));
+            var pcmSamples = MemoryMarshal.Cast<byte, short>(pcmBytes.AsSpan(0, samplesThisPass * sizeof(short)));
+            for (var index = 0; index < samplesThisPass; index++)
+            {
+                var sample = floatSamples[index];
+                if (mixedPeak > 0.98f)
+                {
+                    sample *= scale;
+                }
+
+                pcmSamples[index] = (short)Math.Clamp(sample * 32767, short.MinValue, short.MaxValue);
+            }
+
+            writer.Write(pcmBytes, 0, samplesThisPass * sizeof(short));
+            remaining -= samplesThisPass;
+        }
     }
 
     public static TrackMetrics MeasureWaveFile(string? path)
@@ -483,76 +658,165 @@ public sealed class MeetingRecorder : IDisposable
             return new TrackMetrics(path, TimeSpan.Zero, 0, 0);
         }
 
-        var track = ReadMonoSamples(path);
-        if (track.Samples.Length == 0 || track.SampleRate <= 0)
+        using var track = new MonoSampleReader(path);
+        if (track.SampleRate <= 0)
         {
             return new TrackMetrics(path, TimeSpan.Zero, 0, 0);
         }
 
-        var peak = track.Samples.Select(Math.Abs).DefaultIfEmpty(0).Max();
-        var rms = (float)Math.Sqrt(track.Samples.Select(sample => sample * sample).DefaultIfEmpty(0).Average());
-        return new TrackMetrics(path, TimeSpan.FromSeconds((double)track.Samples.Length / track.SampleRate), peak, rms);
+        long sampleCount = 0;
+        double sumSquares = 0;
+        var peak = 0f;
+        while (track.TryRead(out var sample))
+        {
+            peak = Math.Max(peak, Math.Abs(sample));
+            sumSquares += sample * sample;
+            sampleCount++;
+        }
+
+        if (sampleCount == 0)
+        {
+            return new TrackMetrics(path, TimeSpan.Zero, 0, 0);
+        }
+
+        var rms = (float)Math.Sqrt(sumSquares / sampleCount);
+        return new TrackMetrics(
+            path,
+            TimeSpan.FromSeconds((double)sampleCount / track.SampleRate),
+            peak,
+            rms);
     }
 
-    private static AudioTrack ReadMonoSamples(string path)
+    private sealed class MonoSampleReader : IDisposable
     {
-        using var reader = new AudioFileReader(path);
-        var channels = reader.WaveFormat.Channels;
-        var sampleRate = reader.WaveFormat.SampleRate;
-        var buffer = new float[sampleRate * channels];
-        var samples = new List<float>();
+        private readonly AudioFileReader _reader;
+        private readonly int _channels;
+        private readonly float[] _buffer;
+        private int _bufferOffset;
+        private int _bufferCount;
 
-        int read;
-        while ((read = reader.Read(buffer, 0, buffer.Length)) > 0)
+        public MonoSampleReader(string path)
         {
-            var frames = read / channels;
-            for (var frame = 0; frame < frames; frame++)
+            _reader = new AudioFileReader(path);
+            _channels = _reader.WaveFormat.Channels;
+            SampleRate = _reader.WaveFormat.SampleRate;
+            _buffer = new float[Math.Max(_channels, StreamingFrameBufferSize * _channels)];
+        }
+
+        public int SampleRate { get; }
+
+        public bool TryRead(out float monoSample)
+        {
+            while (_bufferCount - _bufferOffset < _channels)
             {
-                var sum = 0f;
-                for (var channel = 0; channel < channels; channel++)
+                var remaining = _bufferCount - _bufferOffset;
+                if (remaining > 0)
                 {
-                    sum += buffer[(frame * channels) + channel];
+                    Array.Copy(_buffer, _bufferOffset, _buffer, 0, remaining);
                 }
-                samples.Add(sum / channels);
+
+                _bufferOffset = 0;
+                _bufferCount = remaining;
+                var read = _reader.Read(_buffer, remaining, _buffer.Length - remaining);
+                if (read == 0)
+                {
+                    monoSample = 0;
+                    return false;
+                }
+
+                _bufferCount += read;
+            }
+
+            var sum = 0f;
+            for (var channel = 0; channel < _channels; channel++)
+            {
+                sum += _buffer[_bufferOffset + channel];
+            }
+
+            _bufferOffset += _channels;
+            monoSample = sum / _channels;
+            return true;
+        }
+
+        public void Dispose()
+        {
+            _reader.Dispose();
+        }
+    }
+
+    private sealed class ResampledSampleReader : IDisposable
+    {
+        private readonly StreamingTrack _track;
+        private readonly MonoSampleReader _source;
+        private long _targetIndex;
+        private long _sourceIndex;
+        private float _leftSample;
+        private float _rightSample;
+        private bool _hasSamples;
+
+        public ResampledSampleReader(StreamingTrack track)
+        {
+            _track = track;
+            _source = new MonoSampleReader(track.Path);
+            _hasSamples = _source.TryRead(out _leftSample);
+            if (_hasSamples)
+            {
+                _rightSample = _source.TryRead(out var right) ? right : _leftSample;
             }
         }
 
-        return new AudioTrack(samples.ToArray(), sampleRate);
-    }
-
-    private static float[] Resample(float[] samples, int sourceRate, int targetRate)
-    {
-        if (samples.Length == 0 || sourceRate == targetRate)
+        public bool TryRead(out float sample)
         {
-            return samples;
+            if (!_hasSamples || _targetIndex >= _track.TargetSampleCount)
+            {
+                sample = 0;
+                return false;
+            }
+
+            if (_track.SampleRate == MixedSampleRate)
+            {
+                sample = _leftSample;
+                AdvanceSource();
+                _targetIndex++;
+                return true;
+            }
+
+            var sourcePosition = (double)_targetIndex / MixedSampleRate * _track.SampleRate;
+            var leftIndex = (long)Math.Floor(sourcePosition);
+            while (_sourceIndex < leftIndex && _sourceIndex < _track.SourceSampleCount - 1)
+            {
+                AdvanceSource();
+            }
+
+            var blend = sourcePosition - leftIndex;
+            sample = (float)((_leftSample * (1 - blend)) + (_rightSample * blend));
+            _targetIndex++;
+            return true;
         }
 
-        var duration = (double)samples.Length / sourceRate;
-        var targetLength = Math.Max(1, (int)Math.Round(duration * targetRate));
-        var output = new float[targetLength];
-        for (var index = 0; index < targetLength; index++)
+        public void Dispose()
         {
-            var sourcePosition = (double)index / targetRate * sourceRate;
-            var left = (int)Math.Floor(sourcePosition);
-            var right = Math.Min(left + 1, samples.Length - 1);
-            var blend = sourcePosition - left;
-            output[index] = (float)((samples[left] * (1 - blend)) + (samples[right] * blend));
+            _source.Dispose();
         }
-        return output;
+
+        private void AdvanceSource()
+        {
+            if (_sourceIndex >= _track.SourceSampleCount - 1)
+            {
+                _rightSample = _leftSample;
+                return;
+            }
+
+            _leftSample = _rightSample;
+            _sourceIndex++;
+            _rightSample = _source.TryRead(out var next) ? next : _leftSample;
+        }
     }
 
-    private static void WritePcm16(string outputPath, float[] samples, int sampleRate)
-    {
-        Directory.CreateDirectory(Path.GetDirectoryName(outputPath)!);
-        using var writer = new WaveFileWriter(outputPath, new WaveFormat(sampleRate, 16, 1));
-        var bytes = new byte[samples.Length * 2];
-        for (var index = 0; index < samples.Length; index++)
-        {
-            var value = (short)Math.Clamp(samples[index] * 32767, short.MinValue, short.MaxValue);
-            BitConverter.GetBytes(value).CopyTo(bytes, index * 2);
-        }
-        writer.Write(bytes, 0, bytes.Length);
-    }
-
-    private sealed record AudioTrack(float[] Samples, int SampleRate);
+    private sealed record StreamingTrack(
+        string Path,
+        int SampleRate,
+        long SourceSampleCount,
+        long TargetSampleCount,
+        float Gain);
 }
