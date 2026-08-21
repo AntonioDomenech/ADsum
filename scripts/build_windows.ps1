@@ -4,7 +4,7 @@ param()
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
-$Version = "3.1.1"
+$Version = "3.2.0"
 $Root = (Resolve-Path (Split-Path -Parent $PSScriptRoot)).Path
 $ProjectPath = Join-Path $Root "src\ADsum.Desktop\ADsum.Desktop.csproj"
 $PyprojectPath = Join-Path $Root "pyproject.toml"
@@ -13,6 +13,7 @@ $MossSourceDirectory = Join-Path $Root "src\ADsum.Desktop\Moss"
 $LocalSpeechWorkerPath = Join-Path $MossSourceDirectory "local_speech_worker.py"
 $MossRequirementsPath = Join-Path $MossSourceDirectory "requirements.txt"
 $V3GuidePath = Join-Path $Root "docs\v3-local-moss.md"
+$V32GuidePath = Join-Path $Root "docs\v3.2-transcription-models.md"
 $DistDirectory = Join-Path $Root "dist"
 $PublishDirectory = Join-Path $DistDirectory (".publish-" + [guid]::NewGuid().ToString("N"))
 $ArtifactName = "ADsum-v$Version-windows-x64.zip"
@@ -24,7 +25,7 @@ if (Test-Path -LiteralPath "C:\Program Files\dotnet\dotnet.exe") {
     $Dotnet = "C:\Program Files\dotnet\dotnet.exe"
 }
 
-foreach ($requiredPath in @($ProjectPath, $PyprojectPath, $SetupScriptPath, $LocalSpeechWorkerPath, $MossRequirementsPath, $V3GuidePath)) {
+foreach ($requiredPath in @($ProjectPath, $PyprojectPath, $SetupScriptPath, $LocalSpeechWorkerPath, $MossRequirementsPath, $V3GuidePath, $V32GuidePath)) {
     if (-not (Test-Path -LiteralPath $requiredPath)) {
         throw "Required release input is missing: $requiredPath"
     }
@@ -82,6 +83,7 @@ try {
 
     Copy-Item -LiteralPath $SetupScriptPath -Destination (Join-Path $PublishDirectory "setup_moss_runtime.ps1") -Force
     Copy-Item -LiteralPath $V3GuidePath -Destination (Join-Path $PublishDirectory "v3-local-moss.md") -Force
+    Copy-Item -LiteralPath $V32GuidePath -Destination (Join-Path $PublishDirectory "v3.2-transcription-models.md") -Force
     Copy-Item -LiteralPath (Join-Path $Root "README.md") -Destination (Join-Path $PublishDirectory "README.md") -Force
     Copy-Item -LiteralPath (Join-Path $Root "LICENSE") -Destination (Join-Path $PublishDirectory "LICENSE") -Force
 
@@ -120,6 +122,7 @@ try {
             "Moss/requirements.txt",
             "setup_moss_runtime.ps1",
             "v3-local-moss.md",
+            "v3.2-transcription-models.md",
             "README.md",
             "LICENSE"
         )

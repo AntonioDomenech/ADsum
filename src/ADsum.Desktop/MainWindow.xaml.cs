@@ -13,17 +13,21 @@ public partial class MainWindow : Window
     private readonly SettingsStore _settings = new();
     private readonly MeetingRecorder _recorder = new();
     private readonly RecordingMossResourceCoordinator _recordingResources = RecordingMossResourceCoordinator.Shared;
-    private readonly MossTranscriptionService _transcription;
+    private readonly AudioCompressionService _compression = new();
+    private readonly TranscriptionRouter _transcription;
     private readonly OpenAiMeetingMinutesService _minutes = new();
     private readonly MeetingLibraryService _library = new();
     private readonly DispatcherTimer _timer;
     private readonly Dictionary<string, MeetingJob> _meetingJobs = new(StringComparer.OrdinalIgnoreCase);
     private RecordingResult? _lastResult;
     private bool _isRecorderBusy;
+    private bool _syncingModelSelection;
+    private bool _renderingLibrarySelection;
+    private bool _compressionMigrationActive;
 
     public MainWindow()
     {
-        _transcription = new MossTranscriptionService(_recordingResources);
+        _transcription = new TranscriptionRouter(_recordingResources, compression: _compression);
         InitializeComponent();
         _timer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(250) };
         _timer.Tick += Timer_Tick;
@@ -36,9 +40,11 @@ public partial class MainWindow : Window
     {
         SessionNameBox.Text = "";
         KeyStateText.Text = _settings.HasOpenAiKey ? "OpenAI key configured" : "OpenAI key not configured";
+        InitializeGeneralSettings();
         RefreshDevices();
         RefreshLibrary();
         UpdateUiState();
+        _ = RunLibraryCompressionMigrationAsync();
     }
 
     private void RefreshDevices()
@@ -118,11 +124,13 @@ public partial class MainWindow : Window
         }
     }
 
-    private void StopButton_Click(object sender, RoutedEventArgs e)
+    private async void StopButton_Click(object sender, RoutedEventArgs e)
     {
+        RecordingResult? completed = null;
         try
         {
             _lastResult = _recorder.Stop();
+            completed = _lastResult;
             _timer.Stop();
             MicLevelBar.Value = 0;
             SystemLevelBar.Value = 0;
@@ -142,6 +150,11 @@ public partial class MainWindow : Window
                 _recordingResources.EndRecording();
             }
         }
+
+        if (completed is not null)
+        {
+            await EnsureRecordingCompressedAsync(completed);
+        }
     }
 
     private async void TranscribeButton_Click(object sender, RoutedEventArgs e)
@@ -153,9 +166,16 @@ public partial class MainWindow : Window
             return;
         }
 
+        var model = SelectedTranscriptionModel();
+        if (!EnsureModelCanRun(model))
+        {
+            return;
+        }
         var apiKey = _settings.OpenAiKey;
         var notesModel = _settings.NotesModel;
+        var generalTerms = _settings.GeneralTerms;
         string transcript = "";
+        string? compressedAudioPath = null;
         string? generatedTopic = null;
         var usedLocalTopicFallback = false;
         await RunMeetingJobAsync(
@@ -168,12 +188,19 @@ public partial class MainWindow : Window
                     return;
                 }
 
-                TranscriptBox.Text = "Preparing local transcription...";
+                TranscriptBox.Text = $"Preparing {model.DisplayName}...";
                 MinutesBox.Text = "Transcript is being created. Notes are separate.";
             },
             action: async progress =>
             {
-                transcript = await _transcription.TranscribeAsync(audioPath, progress);
+                var run = await _transcription.TranscribeAsync(
+                    audioPath,
+                    model,
+                    generalTerms,
+                    apiKey,
+                    progress);
+                transcript = run.Text;
+                compressedAudioPath = run.CompressedAudioPath;
                 if (MeetingArtifactStore.NeedsGeneratedTopic(source.Name))
                 {
                     if (_settings.UseLocalTopicNaming)
@@ -199,11 +226,19 @@ public partial class MainWindow : Window
             },
             onSuccess: () =>
             {
-                var result = MeetingArtifactStore.SaveTranscript(source, transcript, generatedTopic);
+                var result = MeetingArtifactStore.SaveTranscript(
+                    source,
+                    transcript,
+                    model,
+                    compressedAudioPath,
+                    generalTerms,
+                    generatedTopic);
                 if (ReplaceLastResultIfMatching(source.SessionDirectory, result))
                 {
                     TranscriptBox.Text = string.IsNullOrWhiteSpace(transcript) ? "(No text returned.)" : transcript.Trim();
-                    TranscriptStateText.Text = usedLocalTopicFallback ? "Done - named locally" : "Done";
+                    TranscriptStateText.Text = usedLocalTopicFallback
+                        ? $"Done with {model.DisplayName} - named locally"
+                        : $"Done with {model.DisplayName}";
                 }
 
                 RefreshLibraryAfterJob(source.SessionDirectory, result.SessionDirectory);
@@ -263,6 +298,96 @@ public partial class MainWindow : Window
         _settings.SaveOpenAiKey(key);
         ApiKeyBox.Clear();
         KeyStateText.Text = "OpenAI key configured";
+    }
+
+    private void InitializeGeneralSettings()
+    {
+        _syncingModelSelection = true;
+        try
+        {
+            RecordModelCombo.ItemsSource = TranscriptionModelCatalog.All;
+            LibraryModelCombo.ItemsSource = TranscriptionModelCatalog.All;
+            GeneralModelCombo.ItemsSource = TranscriptionModelCatalog.All;
+            var selected = _settings.SelectedTranscriptionModel;
+            RecordModelCombo.SelectedItem = selected;
+            LibraryModelCombo.SelectedItem = selected;
+            GeneralModelCombo.SelectedItem = selected;
+            GeneralTermsBox.Text = string.Join(Environment.NewLine, _settings.GeneralTerms);
+            UpdateModelDescriptions(selected);
+        }
+        finally
+        {
+            _syncingModelSelection = false;
+        }
+    }
+
+    private void TranscriptionModelCombo_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (_syncingModelSelection || sender is not ComboBox combo || combo.SelectedItem is not TranscriptionModelOption selected)
+        {
+            return;
+        }
+
+        _syncingModelSelection = true;
+        try
+        {
+            RecordModelCombo.SelectedItem = selected;
+            LibraryModelCombo.SelectedItem = selected;
+            GeneralModelCombo.SelectedItem = selected;
+            _settings.SaveGeneralSettings(selected.Id, _settings.GeneralTerms);
+            UpdateModelDescriptions(selected);
+            GeneralSettingsStateText.Text = $"Default model saved: {selected.DisplayName}";
+        }
+        finally
+        {
+            _syncingModelSelection = false;
+        }
+    }
+
+    private void SaveGeneralButton_Click(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            var terms = SettingsStore.ParseGeneralTerms(GeneralTermsBox.Text);
+            var model = SelectedTranscriptionModel();
+            _settings.SaveGeneralSettings(model.Id, terms);
+            GeneralTermsBox.Text = string.Join(Environment.NewLine, terms);
+            GeneralSettingsStateText.Text = $"Saved {terms.Count} term{(terms.Count == 1 ? "" : "s")} for every compatible transcription.";
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(this, ex.Message, "Unable to save general settings", MessageBoxButton.OK, MessageBoxImage.Information);
+        }
+    }
+
+    private async void CompressLibraryButton_Click(object sender, RoutedEventArgs e) =>
+        await RunLibraryCompressionMigrationAsync();
+
+    private TranscriptionModelOption SelectedTranscriptionModel() =>
+        (TranscriptionModelOption?)RecordModelCombo.SelectedItem ?? _settings.SelectedTranscriptionModel;
+
+    private void UpdateModelDescriptions(TranscriptionModelOption model)
+    {
+        var description = $"{model.CapabilitySummary}. {model.Description}";
+        RecordModelDescription.Text = description;
+        LibraryModelDescription.Text = description;
+        GeneralModelDescription.Text = description;
+    }
+
+    private bool EnsureModelCanRun(TranscriptionModelOption model)
+    {
+        if (!model.RequiresOpenAiKey || _settings.HasOpenAiKey)
+        {
+            return true;
+        }
+
+        MessageBox.Show(
+            this,
+            $"{model.DisplayName} needs an OpenAI API key. Save the key in the Record tab first.",
+            "OpenAI key required",
+            MessageBoxButton.OK,
+            MessageBoxImage.Information);
+        return false;
     }
 
     private void RefreshButton_Click(object sender, RoutedEventArgs e) => RefreshDevices();
@@ -342,9 +467,16 @@ public partial class MainWindow : Window
 
         var source = RecordingResultFromLibraryItem(item);
         var audioPath = source.MixedPath!;
+        var model = SelectedTranscriptionModel();
+        if (!EnsureModelCanRun(model))
+        {
+            return;
+        }
         var apiKey = _settings.OpenAiKey;
         var notesModel = _settings.NotesModel;
+        var generalTerms = _settings.GeneralTerms;
         string transcript = "";
+        string? compressedAudioPath = null;
         string? generatedTopic = null;
         await RunMeetingJobAsync(
             source,
@@ -356,12 +488,19 @@ public partial class MainWindow : Window
                     return;
                 }
 
-                LibraryTranscriptBox.Text = "Preparing local transcription...";
+                LibraryTranscriptBox.Text = $"Preparing {model.DisplayName}...";
                 LibraryMinutesBox.Text = "Transcript is being created. Notes are separate.";
             },
             action: async progress =>
             {
-                transcript = await _transcription.TranscribeAsync(audioPath, progress);
+                var run = await _transcription.TranscribeAsync(
+                    audioPath,
+                    model,
+                    generalTerms,
+                    apiKey,
+                    progress);
+                transcript = run.Text;
+                compressedAudioPath = run.CompressedAudioPath;
                 if (MeetingArtifactStore.NeedsGeneratedTopic(source.Name))
                 {
                     if (_settings.UseLocalTopicNaming)
@@ -385,7 +524,13 @@ public partial class MainWindow : Window
             },
             onSuccess: () =>
             {
-                var result = MeetingArtifactStore.SaveTranscript(source, transcript, generatedTopic);
+                var result = MeetingArtifactStore.SaveTranscript(
+                    source,
+                    transcript,
+                    model,
+                    compressedAudioPath,
+                    generalTerms,
+                    generatedTopic);
                 if (IsSelectedLibraryMeeting(source.SessionDirectory))
                 {
                     LibraryTranscriptBox.Text = string.IsNullOrWhiteSpace(transcript) ? "(No text returned.)" : transcript.Trim();
@@ -399,14 +544,15 @@ public partial class MainWindow : Window
     private async void LibraryCreateNotesButton_Click(object sender, RoutedEventArgs e)
     {
         var item = SelectedLibraryMeeting();
-        if (item?.TranscriptPath is null || !File.Exists(item.TranscriptPath))
+        var transcriptVersion = SelectedLibraryTranscriptVersion();
+        if (item is null || transcriptVersion is null || !File.Exists(transcriptVersion.Path))
         {
             MessageBox.Show(this, "Create a transcript before generating notes.", "No transcript", MessageBoxButton.OK, MessageBoxImage.Information);
             return;
         }
 
-        var source = RecordingResultFromLibraryItem(item, requireRecording: false);
-        var transcriptPath = source.TranscriptPath!;
+        var source = RecordingResultFromLibraryItem(item, requireRecording: false, transcriptPath: transcriptVersion.Path);
+        var transcriptPath = transcriptVersion.Path;
         var apiKey = _settings.OpenAiKey;
         var notesModel = _settings.NotesModel;
         string minutes = "";
@@ -450,11 +596,22 @@ public partial class MainWindow : Window
 
     private void LibraryOpenTranscriptButton_Click(object sender, RoutedEventArgs e)
     {
-        var item = SelectedLibraryMeeting();
-        if (item?.TranscriptPath is not null && File.Exists(item.TranscriptPath))
+        var transcriptVersion = SelectedLibraryTranscriptVersion();
+        if (transcriptVersion is not null && File.Exists(transcriptVersion.Path))
         {
-            OpenPath(item.TranscriptPath);
+            OpenPath(transcriptVersion.Path);
         }
+    }
+
+    private void LibraryTranscriptVersionCombo_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (_renderingLibrarySelection)
+        {
+            return;
+        }
+
+        RenderSelectedLibraryTranscript();
+        UpdateLibrarySelectionState(SelectedLibraryMeeting());
     }
 
     private void DeviceCombo_SelectionChanged(object sender, SelectionChangedEventArgs e) => UpdateWarnings();
@@ -530,6 +687,78 @@ public partial class MainWindow : Window
         }
     }
 
+    private async Task EnsureRecordingCompressedAsync(RecordingResult source)
+    {
+        if (source.MixedPath is null || !File.Exists(source.MixedPath))
+        {
+            return;
+        }
+
+        await RunMeetingJobAsync(
+            source,
+            "Compressing audio",
+            onStarted: () =>
+            {
+                if (IsDisplayedLastResult(source.SessionDirectory))
+                {
+                    TranscriptStateText.Text = "Creating compressed MP3";
+                }
+            },
+            action: async progress =>
+            {
+                await _compression.EnsureCompressedAsync(source.MixedPath, progress);
+            },
+            onSuccess: () =>
+            {
+                if (IsDisplayedLastResult(source.SessionDirectory))
+                {
+                    TranscriptStateText.Text = "Compressed MP3 ready";
+                }
+                RefreshLibraryAfterJob(source.SessionDirectory, source.SessionDirectory);
+            });
+    }
+
+    private async Task RunLibraryCompressionMigrationAsync()
+    {
+        if (_compressionMigrationActive)
+        {
+            return;
+        }
+
+        _compressionMigrationActive = true;
+        CompressLibraryButton.IsEnabled = false;
+        CompressionStateText.Text = "Checking saved recordings...";
+        try
+        {
+            var acceptingProgress = 1;
+            var progress = new Progress<string>(message =>
+            {
+                // Progress<T> posts callbacks to the WPF dispatcher. For a very fast idempotent
+                // recheck, the final queued item message can otherwise run after the Ready text
+                // below and make a completed migration look as though it is still active.
+                if (Volatile.Read(ref acceptingProgress) == 1)
+                {
+                    CompressionStateText.Text = message;
+                }
+            });
+            var result = await _compression.CompressLibraryAsync(_library.RootDirectory, progress);
+            Volatile.Write(ref acceptingProgress, 0);
+            CompressionStateText.Text = result.Failed == 0
+                ? $"Ready: {result.Converted} MP3 files created, {result.Reused} already current, {result.Total} recordings checked."
+                : $"Finished with {result.Failed} problem{(result.Failed == 1 ? "" : "s")}: {result.Converted} created, {result.Reused} already current. Originals were preserved.";
+            RefreshLibrary(SelectedLibraryMeeting()?.DirectoryPath);
+        }
+        catch (Exception ex)
+        {
+            CompressionStateText.Text = $"Compression check stopped: {ex.Message}";
+        }
+        finally
+        {
+            _compressionMigrationActive = false;
+            CompressLibraryButton.IsEnabled = true;
+        }
+    }
+
     private async Task RunMeetingJobAsync(
         RecordingResult source,
         string operation,
@@ -598,6 +827,8 @@ public partial class MainWindow : Window
         RecordButton.IsEnabled = recorderControlsEnabled;
         StopButton.IsEnabled = _recorder.IsRecording;
         SaveKeyButton.IsEnabled = true;
+        SaveGeneralButton.IsEnabled = true;
+        CompressLibraryButton.IsEnabled = !_compressionMigrationActive;
         LibraryRefreshButton.IsEnabled = true;
         LibraryList.IsEnabled = true;
 
@@ -665,20 +896,31 @@ public partial class MainWindow : Window
 
     private void RenderLibrarySelection(MeetingLibraryItem? item)
     {
+        _renderingLibrarySelection = true;
+        try
+        {
         if (item is null)
         {
             LibraryTitleText.Text = "No meetings found";
             LibraryDetailsText.Text = $"ADsum will list saved meetings from {_library.RootDirectory}.";
             LibraryMinutesBox.Text = "No meeting selected.";
             LibraryTranscriptBox.Text = "No meeting selected.";
+            LibraryTranscriptVersionCombo.ItemsSource = null;
             SetLibraryButtons(false, false, false, false, false, false);
             return;
         }
 
         LibraryTitleText.Text = item.Topic;
         LibraryMinutesBox.Text = ReadTextPreview(item.MinutesPath, "No meeting minutes saved for this meeting.");
-        LibraryTranscriptBox.Text = ReadTextPreview(item.TranscriptPath, "No transcript saved for this meeting.");
+        LibraryTranscriptVersionCombo.ItemsSource = item.TranscriptVersions;
+        LibraryTranscriptVersionCombo.SelectedItem = item.TranscriptVersions.FirstOrDefault();
+        RenderSelectedLibraryTranscript();
         UpdateLibrarySelectionState(item);
+        }
+        finally
+        {
+            _renderingLibrarySelection = false;
+        }
     }
 
     private void UpdateLibrarySelectionState(MeetingLibraryItem? item)
@@ -690,14 +932,15 @@ public partial class MainWindow : Window
         }
 
         var meetingIsBusy = IsMeetingJobActive(item.DirectoryPath);
+        var selectedTranscript = SelectedLibraryTranscriptVersion();
         RenderLibraryDetails(item);
         SetLibraryButtons(
             !meetingIsBusy && Directory.Exists(item.DirectoryPath),
             !meetingIsBusy && item.RecordingPath is not null && File.Exists(item.RecordingPath),
             !meetingIsBusy && item.RecordingPath is not null && File.Exists(item.RecordingPath),
-            !meetingIsBusy && item.TranscriptPath is not null && File.Exists(item.TranscriptPath),
+            !meetingIsBusy && selectedTranscript is not null && File.Exists(selectedTranscript.Path),
             !meetingIsBusy && item.MinutesPath is not null && File.Exists(item.MinutesPath),
-            !meetingIsBusy && item.TranscriptPath is not null && File.Exists(item.TranscriptPath));
+            !meetingIsBusy && selectedTranscript is not null && File.Exists(selectedTranscript.Path));
     }
 
     private void RenderLibraryDetails(MeetingLibraryItem item)
@@ -706,6 +949,7 @@ public partial class MainWindow : Window
             $"{item.DateText}\n" +
             $"{item.DurationText}\n" +
             $"{item.FileSummary}\n" +
+            $"Compressed MP3: {(item.HasCompressedRecording ? Path.GetFileName(item.CompressedRecordingPath) : "pending")}\n" +
             $"{item.DirectoryPath}";
         if (TryGetMeetingJob(item.DirectoryPath, out var job))
         {
@@ -716,6 +960,17 @@ public partial class MainWindow : Window
     }
 
     private MeetingLibraryItem? SelectedLibraryMeeting() => (MeetingLibraryItem?)LibraryList.SelectedItem;
+
+    private TranscriptVersion? SelectedLibraryTranscriptVersion() =>
+        (TranscriptVersion?)LibraryTranscriptVersionCombo.SelectedItem;
+
+    private void RenderSelectedLibraryTranscript()
+    {
+        var selected = SelectedLibraryTranscriptVersion();
+        LibraryTranscriptBox.Text = ReadTextPreview(
+            selected?.Path,
+            "No transcript saved for this meeting. Choose a model and create one.");
+    }
 
     private void SetLibraryButtons(bool folder, bool recording, bool transcribe, bool createNotes, bool minutes, bool transcript)
     {
@@ -780,7 +1035,10 @@ public partial class MainWindow : Window
         }
     }
 
-    private static RecordingResult RecordingResultFromLibraryItem(MeetingLibraryItem item, bool requireRecording = true)
+    private static RecordingResult RecordingResultFromLibraryItem(
+        MeetingLibraryItem item,
+        bool requireRecording = true,
+        string? transcriptPath = null)
     {
         TrackMetrics mixedMetrics;
         string? mixedPath;
@@ -807,7 +1065,7 @@ public partial class MainWindow : Window
             null,
             null,
             mixedPath,
-            item.TranscriptPath,
+            transcriptPath ?? item.TranscriptPath,
             item.MinutesPath,
             new TrackMetrics(null, TimeSpan.Zero, 0, 0),
             new TrackMetrics(null, TimeSpan.Zero, 0, 0),

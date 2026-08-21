@@ -35,6 +35,12 @@ public partial class App : Application
             return;
         }
 
+        if (HasArgument(e.Args, "--compress-recordings"))
+        {
+            await CompressRecordingsAsync(e.Args);
+            return;
+        }
+
         if (HasArgument(e.Args, "--transcribe-meeting"))
         {
             await TranscribeMeetingAsync(e.Args);
@@ -67,6 +73,7 @@ public partial class App : Application
     {
         if (HasArgument(args, "--transcribe-meeting") ||
             HasArgument(args, "--transcribe-file") ||
+            HasArgument(args, "--compress-recordings") ||
             HasArgument(args, "--smoke-test"))
         {
             return true;
@@ -78,18 +85,21 @@ public partial class App : Application
     private static async Task ReportExclusiveInstanceConflictAsync(string[] args)
     {
         const string error =
-            "Another ADsum v3 process is already using recording or local transcription. " +
+            "Another ADsum v3.2 process is already using recording or transcription. " +
             "Use that window, or wait for its offline transcription to finish.";
 
         if (HasArgument(args, "--transcribe-meeting") ||
             HasArgument(args, "--transcribe-file") ||
+            HasArgument(args, "--compress-recordings") ||
             HasArgument(args, "--smoke-test"))
         {
             var defaultName = HasArgument(args, "--transcribe-meeting")
                 ? "adsum-meeting-transcription-result.json"
                 : HasArgument(args, "--transcribe-file")
                     ? "adsum-transcription-result.json"
-                    : "adsum-smoke-result.json";
+                    : HasArgument(args, "--compress-recordings")
+                        ? "adsum-compression-result.json"
+                        : "adsum-smoke-result.json";
             var resultPath = ArgValue(args, "--result") ?? Path.Combine(Path.GetTempPath(), defaultName);
             var meetingDirectory = ArgValue(args, "--transcribe-meeting");
             if (!string.IsNullOrWhiteSpace(meetingDirectory) &&
@@ -116,10 +126,44 @@ public partial class App : Application
 
         MessageBox.Show(
             error,
-            "ADsum v3 is already running",
+            "ADsum v3.2 is already running",
             MessageBoxButton.OK,
             MessageBoxImage.Information);
         Current.Shutdown(2);
+    }
+
+    private static async Task CompressRecordingsAsync(string[] args)
+    {
+        var resultPath = ArgValue(args, "--result") ?? Path.Combine(Path.GetTempPath(), "adsum-compression-result.json");
+        try
+        {
+            var library = new MeetingLibraryService();
+            var compression = new AudioCompressionService();
+            var result = await compression.CompressLibraryAsync(library.RootDirectory);
+            var payload = new
+            {
+                ok = result.Failed == 0,
+                root = library.RootDirectory,
+                result.Total,
+                result.Converted,
+                result.Reused,
+                result.Failed,
+                failures = result.Failures
+            };
+            EnsureParentDirectory(resultPath);
+            await File.WriteAllTextAsync(
+                resultPath,
+                JsonSerializer.Serialize(payload, new JsonSerializerOptions { WriteIndented = true }));
+            Current.Shutdown(result.Failed == 0 ? 0 : 1);
+        }
+        catch (Exception ex)
+        {
+            EnsureParentDirectory(resultPath);
+            await File.WriteAllTextAsync(
+                resultPath,
+                JsonSerializer.Serialize(new { ok = false, error = ex.ToString() }, new JsonSerializerOptions { WriteIndented = true }));
+            Current.Shutdown(1);
+        }
     }
 
     private static async Task TranscribeMeetingAsync(string[] args)
@@ -180,11 +224,16 @@ public partial class App : Application
                 mixedMetrics);
 
             var settings = new SettingsStore();
-            using var transcription = new MossTranscriptionService(
+            var model = TranscriptionModelCatalog.Resolve(ArgValue(args, "--model") ?? settings.SelectedTranscriptionModel.Id);
+            using var transcription = new TranscriptionRouter(
                 allowExternalJobFallback: true);
-            var transcript = await transcription.TranscribeAsync(
+            var run = await transcription.TranscribeAsync(
                 item.RecordingPath,
+                model,
+                settings.GeneralTerms,
+                settings.OpenAiKey,
                 diagnosticsPath: diagnosticsPath);
+            var transcript = run.Text;
 
             string? generatedTopic = null;
             var namedLocally = false;
@@ -212,13 +261,21 @@ public partial class App : Application
                 }
             }
 
-            var saved = MeetingArtifactStore.SaveTranscript(source, transcript, generatedTopic);
+            var saved = MeetingArtifactStore.SaveTranscript(
+                source,
+                transcript,
+                model,
+                run.CompressedAudioPath,
+                settings.GeneralTerms,
+                generatedTopic);
             var payload = new
             {
                 ok = true,
                 sessionDirectory = saved.SessionDirectory,
                 recordingPath = saved.MixedPath,
                 transcriptPath = saved.TranscriptPath,
+                compressedAudioPath = run.CompressedAudioPath,
+                transcriptionModel = model.Id,
                 diagnosticsPath,
                 topic = saved.Name,
                 topicNamedLocally = namedLocally,
@@ -273,10 +330,22 @@ public partial class App : Application
         {
             var audioPath = ArgValue(args, "--transcribe-file")
                 ?? throw new InvalidOperationException("Pass an audio path after --transcribe-file.");
-            using var service = new MossTranscriptionService(
+            var settings = new SettingsStore();
+            var model = TranscriptionModelCatalog.Resolve(ArgValue(args, "--model") ?? settings.SelectedTranscriptionModel.Id);
+            using var service = new TranscriptionRouter(
                 allowExternalJobFallback: true);
-            var text = await service.TranscribeAsync(audioPath);
-            var payload = new { ok = true, text };
+            var run = await service.TranscribeAsync(
+                audioPath,
+                model,
+                settings.GeneralTerms,
+                settings.OpenAiKey);
+            var payload = new
+            {
+                ok = true,
+                text = run.Text,
+                compressedAudioPath = run.CompressedAudioPath,
+                transcriptionModel = model.Id
+            };
             EnsureParentDirectory(resultPath);
             await File.WriteAllTextAsync(resultPath, JsonSerializer.Serialize(payload, new JsonSerializerOptions { WriteIndented = true }));
             Current.Shutdown(0);

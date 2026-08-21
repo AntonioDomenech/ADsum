@@ -7,6 +7,7 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using NAudio.Wave;
 
 namespace ADsum.Desktop.Services;
 
@@ -44,7 +45,8 @@ public sealed class MossTranscriptionService : IDisposable
         string audioPath,
         IProgress<string>? progress = null,
         CancellationToken cancellationToken = default,
-        string? diagnosticsPath = null)
+        string? diagnosticsPath = null,
+        IReadOnlyList<string>? generalTerms = null)
     {
         ThrowIfDisposed();
         if (!File.Exists(audioPath))
@@ -59,12 +61,14 @@ public sealed class MossTranscriptionService : IDisposable
         var checkpointDirectory = CheckpointDirectoryFor(fullAudioPath);
         Directory.CreateDirectory(jobDirectory);
         Directory.CreateDirectory(checkpointDirectory);
+        var workerAudioPath = PrepareWorkerAudio(fullAudioPath, jobDirectory, progress);
 
         var request = BuildRequest(
             requestId,
-            fullAudioPath,
+            workerAudioPath,
             outputPath,
-            checkpointDirectory);
+            checkpointDirectory,
+            generalTerms);
         using var linkedCancellation = CancellationTokenSource.CreateLinkedTokenSource(
             cancellationToken,
             _shutdown.Token);
@@ -134,6 +138,42 @@ public sealed class MossTranscriptionService : IDisposable
                 TryDeleteDirectory(checkpointDirectory);
             }
         }
+    }
+
+    private static string PrepareWorkerAudio(
+        string compressedSourcePath,
+        string jobDirectory,
+        IProgress<string>? progress)
+    {
+        if (Path.GetExtension(compressedSourcePath).Equals(".wav", StringComparison.OrdinalIgnoreCase))
+        {
+            return compressedSourcePath;
+        }
+
+        // The persistent and model-facing source is always ADsum's compressed MP3. The established
+        // local Python worker deliberately accepts only PCM WAV, so decode that MP3 into an isolated
+        // short-lived job file. This never falls back to the original meeting WAV, and the job folder
+        // is removed in TranscribeAsync's finally block.
+        progress?.Report("Preparing compressed MP3 for the local speech models");
+        var workerPath = Path.Combine(jobDirectory, "compressed-source.wav");
+        using var source = new AudioFileReader(compressedSourcePath);
+        var expectedDuration = source.TotalTime;
+        WaveFileWriter.CreateWaveFile16(workerPath, source);
+
+        using var decoded = new WaveFileReader(workerPath);
+        if (decoded.Length <= 44 || decoded.TotalTime <= TimeSpan.Zero)
+        {
+            throw new InvalidDataException("The compressed MP3 could not be decoded for local transcription.");
+        }
+
+        var tolerance = TimeSpan.FromMilliseconds(Math.Max(250, expectedDuration.TotalMilliseconds * 0.002));
+        if ((decoded.TotalTime - expectedDuration).Duration() > tolerance)
+        {
+            throw new InvalidDataException(
+                "The temporary local-transcription decode does not match the compressed MP3 duration.");
+        }
+
+        return workerPath;
     }
 
     public void Dispose()
@@ -559,7 +599,8 @@ public sealed class MossTranscriptionService : IDisposable
         string requestId,
         string audioPath,
         string outputPath,
-        string checkpointDirectory)
+        string checkpointDirectory,
+        IReadOnlyList<string>? generalTerms)
     {
         var batchSize = ReadIntegerSetting(
             "ADSUM_LOCAL_SPEECH_BATCH_SIZE",
@@ -579,7 +620,7 @@ public sealed class MossTranscriptionService : IDisposable
             OutputPath: outputPath,
             CheckpointDirectory: checkpointDirectory,
             Language: LocalSpeechLanguage(),
-            Hotwords: LocalSpeechHotwords(),
+            Hotwords: MergeHotwords(LocalSpeechHotwords(), generalTerms),
             AsrModelPath: ResolveModelPath(
                 "ADSUM_LOCAL_SPEECH_ASR_MODEL",
                 Path.Combine("Models", "FasterWhisper", "large-v3-turbo")),
@@ -597,6 +638,18 @@ public sealed class MossTranscriptionService : IDisposable
             WordTimestamps: true,
             RecordingComplete: true,
             Resume: true);
+    }
+
+    private static IReadOnlyList<string> MergeHotwords(
+        IReadOnlyList<string> configuredHotwords,
+        IReadOnlyList<string>? generalTerms)
+    {
+        return configuredHotwords
+            .Concat(generalTerms ?? Array.Empty<string>())
+            .Select(value => value.Trim())
+            .Where(value => value.Length > 0)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
     }
 
     private static string ResolvePythonPath()

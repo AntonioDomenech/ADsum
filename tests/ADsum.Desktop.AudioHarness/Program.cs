@@ -25,6 +25,7 @@ try
 
     RunCompatibilityChecks(root);
     RunLibraryDurationChecks(root);
+    RunCompressionAndTranscriptVersionChecks(root);
 }
 
 finally
@@ -47,6 +48,103 @@ void RunLibraryDurationChecks(string directory)
     Assert(meetings[0].DurationText == "Duration: 1:30:17", "library duration text is incorrect");
 
     Console.WriteLine($"PASS library_duration={meetings[0].DurationText}");
+}
+
+void RunCompressionAndTranscriptVersionChecks(string directory)
+{
+    var libraryRoot = Path.Combine(directory, "compressed-library");
+    var meetingDirectory = Path.Combine(libraryRoot, "20260821-0900-compression-and-versions");
+    Directory.CreateDirectory(meetingDirectory);
+    var originalPath = Path.Combine(meetingDirectory, MeetingArtifactStore.RecordingFileName);
+    WritePcm16Fixture(originalPath, 16000, 1, 4.0, (frame, _, rate) =>
+        (float)(0.12 * Math.Sin(2 * Math.PI * 220 * frame / rate)));
+
+    var compression = new AudioCompressionService();
+    var compressedPath = compression.EnsureCompressedAsync(originalPath).GetAwaiter().GetResult();
+    Assert(File.Exists(originalPath), "compression removed the original recording");
+    Assert(File.Exists(compressedPath), "compression did not create the MP3");
+    Assert(Path.GetFileName(compressedPath) == AudioCompressionService.CompressedFileName,
+        "compressed MP3 used an unstable filename");
+    using (var mp3 = new Mp3FileReader(compressedPath))
+    {
+        Assert(Math.Abs((mp3.TotalTime - TimeSpan.FromSeconds(4)).TotalMilliseconds) < 150,
+            "compressed MP3 duration changed materially");
+    }
+
+    var firstLength = new FileInfo(compressedPath).Length;
+    var reusedPath = compression.EnsureCompressedAsync(originalPath).GetAwaiter().GetResult();
+    Assert(reusedPath == compressedPath, "compression did not reuse the stable MP3 path");
+    Assert(new FileInfo(compressedPath).Length == firstLength, "reusing the MP3 unexpectedly rewrote its content");
+    Assert(Directory.GetFiles(meetingDirectory, "*.tmp.mp3").Length == 0,
+        "compression left a temporary MP3 behind");
+
+    var previousMock = Environment.GetEnvironmentVariable("ADSUM_LOCAL_SPEECH_MOCK_INFERENCE");
+    try
+    {
+        Environment.SetEnvironmentVariable("ADSUM_LOCAL_SPEECH_MOCK_INFERENCE", "1");
+        using var localService = new MossTranscriptionService(allowExternalJobFallback: false);
+        var mockTranscript = localService
+            .TranscribeAsync(compressedPath, generalTerms: ["CERTANIA"])
+            .GetAwaiter()
+            .GetResult();
+        Assert(mockTranscript.Contains("Speaker A", StringComparison.Ordinal),
+            "the local pipeline could not transcribe from the compressed MP3 source");
+    }
+    finally
+    {
+        Environment.SetEnvironmentVariable("ADSUM_LOCAL_SPEECH_MOCK_INFERENCE", previousMock);
+    }
+
+    var metrics = MeetingRecorder.MeasureWaveFile(originalPath);
+    var source = new RecordingResult(
+        "Compression and versions",
+        meetingDirectory,
+        new DateTime(2026, 8, 21, 9, 0, 0),
+        metrics.Duration,
+        null,
+        null,
+        originalPath,
+        null,
+        null,
+        new TrackMetrics(null, TimeSpan.Zero, 0, 0),
+        new TrackMetrics(null, TimeSpan.Zero, 0, 0),
+        metrics);
+    var local = TranscriptionModelCatalog.Resolve(TranscriptionModelCatalog.LocalWhisperPyannoteId);
+    var cloud = TranscriptionModelCatalog.Resolve(TranscriptionModelCatalog.GptTranscribeId);
+    var localSaved = MeetingArtifactStore.SaveTranscript(
+        source,
+        "Speaker A: local text",
+        local,
+        compressedPath,
+        ["CERTANIA"],
+        generatedTopic: null);
+    var localPath = localSaved.TranscriptPath!;
+    var cloudSaved = MeetingArtifactStore.SaveTranscript(
+        localSaved,
+        "Cloud text",
+        cloud,
+        compressedPath,
+        ["CERTANIA"],
+        generatedTopic: null);
+    Assert(File.Exists(localPath), "a second model removed the first model transcript");
+    Assert(File.Exists(cloudSaved.TranscriptPath), "the second model transcript was not saved");
+    Assert(!string.Equals(localPath, cloudSaved.TranscriptPath, StringComparison.OrdinalIgnoreCase),
+        "different models wrote to the same transcript path");
+    File.WriteAllText(Path.Combine(meetingDirectory, "transcription-compression-and-versions.md"), "legacy");
+
+    var meeting = new MeetingLibraryService(libraryRoot).GetMeetings().Single();
+    Assert(meeting.HasCompressedRecording, "library did not recognize the compressed MP3");
+    Assert(meeting.TranscriptVersions.Count == 3, "library did not retain all transcript versions");
+    Assert(meeting.TranscriptVersions.Any(version => version.ModelId == TranscriptionModelCatalog.LocalWhisperPyannoteId),
+        "library did not identify the local model transcript");
+    Assert(meeting.TranscriptVersions.Any(version => version.ModelId == TranscriptionModelCatalog.GptTranscribeId),
+        "library did not identify the GPT Transcribe transcript");
+    Assert(meeting.TranscriptVersions.Any(version => version.ModelId == TranscriptionModelCatalog.LegacyId),
+        "library did not preserve the legacy transcript");
+    Assert(File.ReadAllText(cloudSaved.TranscriptPath!).Contains("General terms applied: CERTANIA"),
+        "transcript metadata did not record applied general terms");
+
+    Console.WriteLine($"PASS compression_bytes={firstLength} local_mp3_source=true transcript_versions={meeting.TranscriptVersions.Count}");
 }
 
 void RunCompatibilityChecks(string directory)

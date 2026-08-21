@@ -22,6 +22,11 @@ public sealed class SettingsStore
 
     public string NotesModel => FindSetting("ADSUM_OPENAI_NOTES_MODEL", "ADSUM_OPENAI_MINUTES_MODEL") ?? "gpt-5.5";
 
+    public TranscriptionModelOption SelectedTranscriptionModel =>
+        TranscriptionModelCatalog.Resolve(_settings.TranscriptionModelId);
+
+    public IReadOnlyList<string> GeneralTerms => NormalizeTerms(_settings.GeneralTerms ?? []);
+
     public bool HasOpenAiKey => !string.IsNullOrWhiteSpace(OpenAiKey);
 
     public bool UseLocalTopicNaming => IsTruthy(FindSetting("ADSUM_LOCAL_TOPIC_ONLY"));
@@ -30,6 +35,36 @@ public sealed class SettingsStore
     {
         _settings.OpenAiKey = Protect(key);
         Save();
+    }
+
+    public void SaveGeneralSettings(string transcriptionModelId, IEnumerable<string> generalTerms)
+    {
+        _settings.TranscriptionModelId = TranscriptionModelCatalog.Resolve(transcriptionModelId).Id;
+        _settings.GeneralTerms = NormalizeTerms(generalTerms).ToList();
+        Save();
+    }
+
+    public static IReadOnlyList<string> ParseGeneralTerms(string text)
+    {
+        var terms = NormalizeTerms(text.Split(new[] { "\r\n", "\n", "\r" }, StringSplitOptions.None));
+        if (terms.Count > 100)
+        {
+            throw new InvalidOperationException("Keep the general list to 100 terms or fewer.");
+        }
+
+        foreach (var term in terms)
+        {
+            if (term.Length > 120)
+            {
+                throw new InvalidOperationException($"A general term is longer than 120 characters: {term[..Math.Min(40, term.Length)]}...");
+            }
+            if (term.Contains('<') || term.Contains('>'))
+            {
+                throw new InvalidOperationException("General terms cannot contain < or > because the transcription API rejects them.");
+            }
+        }
+
+        return terms;
     }
 
     private AppSettings Load()
@@ -144,6 +179,12 @@ public sealed class SettingsStore
 
     private static string? NonEmpty(string? value) => string.IsNullOrWhiteSpace(value) ? null : value.Trim();
 
+    private static IReadOnlyList<string> NormalizeTerms(IEnumerable<string> values) => values
+        .Select(value => value.Trim())
+        .Where(value => value.Length > 0)
+        .Distinct(StringComparer.OrdinalIgnoreCase)
+        .ToList();
+
     private static bool IsTruthy(string? value) => value is not null &&
         (value.Equals("1", StringComparison.OrdinalIgnoreCase) ||
          value.Equals("true", StringComparison.OrdinalIgnoreCase) ||
@@ -153,5 +194,9 @@ public sealed class SettingsStore
     private sealed class AppSettings
     {
         public string? OpenAiKey { get; set; }
+
+        public string? TranscriptionModelId { get; set; }
+
+        public List<string>? GeneralTerms { get; set; }
     }
 }

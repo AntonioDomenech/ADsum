@@ -11,7 +11,7 @@
 
         <DockPanel Grid.Row="0">
             <StackPanel DockPanel.Dock="Left" VerticalAlignment="Center">
-                <TextBlock Text="ADsum v3" Foreground="{StaticResource AccentBrush}" FontSize="12" FontWeight="Bold" />
+                <TextBlock Text="ADsum v3.2" Foreground="{StaticResource AccentBrush}" FontSize="12" FontWeight="Bold" />
                 <TextBlock Text="Meeting Recorder" FontSize="34" FontWeight="Bold" />
             </StackPanel>
             <Border DockPanel.Dock="Right" Background="White" BorderBrush="{StaticResource LineBrush}" BorderThickness="1"
@@ -34,6 +34,12 @@
                     <TextBlock Text="Meeting topic (optional)" Foreground="{StaticResource MutedBrush}" FontWeight="SemiBold" />
                     <TextBox x:Name="SessionNameBox" Margin="0,7,0,18" MinHeight="38" Padding="8"
                              ToolTip="Leave this blank and ADsum will name the meeting from its transcript." />
+
+                    <TextBlock Text="Transcription model" Foreground="{StaticResource MutedBrush}" FontWeight="SemiBold" />
+                    <ComboBox x:Name="RecordModelCombo" Margin="0,7,0,5" MinHeight="38"
+                              SelectionChanged="TranscriptionModelCombo_SelectionChanged" />
+                    <TextBlock x:Name="RecordModelDescription" Foreground="{StaticResource MutedBrush}" TextWrapping="Wrap"
+                               FontSize="12" MinHeight="42" Margin="0,0,0,14" />
 
                     <TextBlock Text="Microphone" Foreground="{StaticResource MutedBrush}" FontWeight="SemiBold" />
                     <ComboBox x:Name="MicrophoneCombo" DisplayMemberPath="Name" SelectedValuePath="Id" Margin="0,7,0,4" MinHeight="38" />
@@ -117,7 +123,7 @@
                             <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
                                 <Button x:Name="OpenFolderButton" Content="Open folder" MinWidth="112" Margin="0,0,8,0" Click="OpenFolderButton_Click" IsEnabled="False" />
                                 <Button x:Name="OpenRecordingButton" Content="Open recording" MinWidth="126" Margin="0,0,8,0" Click="OpenRecordingButton_Click" IsEnabled="False" />
-                                <Button x:Name="TranscribeButton" Content="Create transcript" MinWidth="136" Margin="0,0,8,0" Click="TranscribeButton_Click" IsEnabled="False" />
+                                <Button x:Name="TranscribeButton" Content="Transcribe with selected model" MinWidth="210" Margin="0,0,8,0" Click="TranscribeButton_Click" IsEnabled="False" />
                                 <Button x:Name="CreateNotesButton" Content="Create notes" MinWidth="118" Click="CreateNotesButton_Click" IsEnabled="False" />
                             </StackPanel>
                         </DockPanel>
@@ -206,14 +212,36 @@
                             <TextBlock x:Name="LibraryDetailsText" Grid.Row="1" Text="Saved recordings and notes will appear here." Foreground="{StaticResource MutedBrush}" TextWrapping="Wrap" Margin="0,8,0,0" />
 
                             <DockPanel Grid.Row="3">
-                                <WrapPanel DockPanel.Dock="Top" Margin="0,0,0,14">
+                                <StackPanel DockPanel.Dock="Top" Margin="0,0,0,14">
+                                    <Grid Margin="0,0,0,5">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="150" />
+                                            <ColumnDefinition Width="*" />
+                                        </Grid.ColumnDefinitions>
+                                        <TextBlock Text="Transcription model" Foreground="{StaticResource MutedBrush}" FontWeight="SemiBold" VerticalAlignment="Center" />
+                                        <ComboBox x:Name="LibraryModelCombo" Grid.Column="1" MinHeight="38"
+                                                  SelectionChanged="TranscriptionModelCombo_SelectionChanged" />
+                                    </Grid>
+                                    <TextBlock x:Name="LibraryModelDescription" Foreground="{StaticResource MutedBrush}" TextWrapping="Wrap"
+                                               FontSize="12" Margin="150,0,0,10" />
+                                    <Grid Margin="0,0,0,10">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="150" />
+                                            <ColumnDefinition Width="*" />
+                                        </Grid.ColumnDefinitions>
+                                        <TextBlock Text="Saved transcript" Foreground="{StaticResource MutedBrush}" FontWeight="SemiBold" VerticalAlignment="Center" />
+                                        <ComboBox x:Name="LibraryTranscriptVersionCombo" Grid.Column="1" MinHeight="38"
+                                                  SelectionChanged="LibraryTranscriptVersionCombo_SelectionChanged" />
+                                    </Grid>
+                                    <WrapPanel>
                                     <Button x:Name="LibraryOpenFolderButton" Content="Open folder" MinWidth="112" Margin="0,0,8,0" Click="LibraryOpenFolderButton_Click" IsEnabled="False" />
                                     <Button x:Name="LibraryOpenRecordingButton" Content="Open recording" MinWidth="126" Margin="0,0,8,0" Click="LibraryOpenRecordingButton_Click" IsEnabled="False" />
-                                    <Button x:Name="LibraryTranscribeButton" Content="Create transcript" MinWidth="136" Margin="0,0,8,0" Click="LibraryTranscribeButton_Click" IsEnabled="False" />
+                                    <Button x:Name="LibraryTranscribeButton" Content="Transcribe with selected model" MinWidth="196" Margin="0,0,8,0" Click="LibraryTranscribeButton_Click" IsEnabled="False" />
                                     <Button x:Name="LibraryCreateNotesButton" Content="Create notes" MinWidth="118" Margin="0,0,8,0" Click="LibraryCreateNotesButton_Click" IsEnabled="False" />
                                     <Button x:Name="LibraryOpenMinutesButton" Content="Open minutes" MinWidth="112" Margin="0,0,8,0" Click="LibraryOpenMinutesButton_Click" IsEnabled="False" />
                                     <Button x:Name="LibraryOpenTranscriptButton" Content="Open transcript" MinWidth="126" Click="LibraryOpenTranscriptButton_Click" IsEnabled="False" />
-                                </WrapPanel>
+                                    </WrapPanel>
+                                </StackPanel>
                                 <TabControl>
                                     <TabItem Header="Minutes">
                                         <TextBox x:Name="LibraryMinutesBox" Text="Select a meeting with minutes." TextWrapping="Wrap"
@@ -228,6 +256,62 @@
                                 </TabControl>
                             </DockPanel>
                         </Grid>
+                    </Border>
+                </Grid>
+            </TabItem>
+            <TabItem Header="General">
+                <Grid Margin="0,8,0,0">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="18" />
+                        <ColumnDefinition Width="390" />
+                    </Grid.ColumnDefinitions>
+
+                    <Border Grid.Column="0" Style="{StaticResource Panel}">
+                        <Grid>
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto" />
+                                <RowDefinition Height="Auto" />
+                                <RowDefinition Height="Auto" />
+                                <RowDefinition Height="*" />
+                                <RowDefinition Height="Auto" />
+                            </Grid.RowDefinitions>
+                            <TextBlock Text="General transcription settings" FontSize="22" FontWeight="Bold" />
+                            <StackPanel Grid.Row="1" Margin="0,16,0,16">
+                                <TextBlock Text="Default transcription model" Foreground="{StaticResource MutedBrush}" FontWeight="SemiBold" />
+                                <ComboBox x:Name="GeneralModelCombo" Margin="0,7,0,5" MinHeight="38"
+                                          SelectionChanged="TranscriptionModelCombo_SelectionChanged" />
+                                <TextBlock x:Name="GeneralModelDescription" Foreground="{StaticResource MutedBrush}" TextWrapping="Wrap" FontSize="12" />
+                            </StackPanel>
+                            <StackPanel Grid.Row="2" Margin="0,0,0,8">
+                                <TextBlock Text="Relevant terms" Foreground="{StaticResource MutedBrush}" FontWeight="SemiBold" />
+                                <TextBlock Text="Enter one name, company, acronym, product, or specialist term per line. These terms are saved globally and reused for every compatible transcription."
+                                           Foreground="{StaticResource MutedBrush}" TextWrapping="Wrap" FontSize="12" Margin="0,4,0,0" />
+                            </StackPanel>
+                            <TextBox x:Name="GeneralTermsBox" Grid.Row="3" AcceptsReturn="True" TextWrapping="Wrap"
+                                     VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" Padding="10" FontSize="14" />
+                            <DockPanel Grid.Row="4" Margin="0,14,0,0">
+                                <Button x:Name="SaveGeneralButton" Content="Save general settings" Style="{StaticResource PrimaryButton}"
+                                        MinWidth="170" Click="SaveGeneralButton_Click" DockPanel.Dock="Left" />
+                                <TextBlock x:Name="GeneralSettingsStateText" Text="Settings loaded" Foreground="{StaticResource MutedBrush}"
+                                           Margin="14,0,0,0" VerticalAlignment="Center" TextWrapping="Wrap" />
+                            </DockPanel>
+                        </Grid>
+                    </Border>
+
+                    <Border Grid.Column="2" Style="{StaticResource Panel}">
+                        <StackPanel>
+                            <TextBlock Text="Compressed audio" FontSize="20" FontWeight="Bold" />
+                            <TextBlock Text="ADsum preserves every original WAV and creates recording-compressed.mp3 beside it. All transcription models receive that MP3, including the local model."
+                                       Foreground="{StaticResource MutedBrush}" TextWrapping="Wrap" Margin="0,10,0,16" />
+                            <Button x:Name="CompressLibraryButton" Content="Check and compress older recordings" Click="CompressLibraryButton_Click" />
+                            <TextBlock x:Name="CompressionStateText" Text="Older-recording check will start automatically."
+                                       Foreground="{StaticResource MutedBrush}" TextWrapping="Wrap" Margin="0,10,0,22" />
+
+                            <TextBlock Text="Model behavior" FontSize="18" FontWeight="Bold" />
+                            <TextBlock Text="Local Whisper + Pyannote and GPT-4o Transcribe Diarize include anonymous speaker labels. GPT Transcribe produces the new high-accuracy text transcript but does not include speaker diarization. OpenAI's specialized diarization endpoint does not accept vocabulary hints; your global terms remain saved for the other compatible models."
+                                       Foreground="{StaticResource MutedBrush}" TextWrapping="Wrap" Margin="0,10,0,0" />
+                        </StackPanel>
                     </Border>
                 </Grid>
             </TabItem>

@@ -12,16 +12,39 @@ public static class MeetingArtifactStore
 
     public static RecordingResult SaveTranscript(RecordingResult result, string transcript, string? generatedTopic = null)
     {
+        return SaveTranscript(
+            result,
+            transcript,
+            TranscriptionModelCatalog.Default,
+            compressedAudioPath: null,
+            generalTerms: [],
+            generatedTopic: generatedTopic);
+    }
+
+    public static RecordingResult SaveTranscript(
+        RecordingResult result,
+        string transcript,
+        TranscriptionModelOption model,
+        string? compressedAudioPath,
+        IReadOnlyList<string> generalTerms,
+        string? generatedTopic = null)
+    {
         if (!string.IsNullOrWhiteSpace(generatedTopic))
         {
             result = MoveToTopicDirectory(result, generatedTopic.Trim());
         }
 
         result = RenameRecordingForTopic(result);
-        result = RenameTranscriptForTopic(result);
         Directory.CreateDirectory(result.SessionDirectory);
-        var path = Path.Combine(result.SessionDirectory, TranscriptFileNameForTopic(result.Name));
-        File.WriteAllText(path, BuildTranscriptMarkdown(result, transcript), Encoding.UTF8);
+        var path = Path.Combine(result.SessionDirectory, TranscriptFileNameForModel(result.Name, model.Id));
+        var currentCompressedPath = Path.Combine(result.SessionDirectory, AudioCompressionService.CompressedFileName);
+        var savedCompressedPath = File.Exists(currentCompressedPath)
+            ? currentCompressedPath
+            : compressedAudioPath;
+        File.WriteAllText(
+            path,
+            BuildTranscriptMarkdown(result, transcript, model, savedCompressedPath, generalTerms),
+            Encoding.UTF8);
         return result with { TranscriptPath = path };
     }
 
@@ -32,13 +55,15 @@ public static class MeetingArtifactStore
             : result.Name;
         result = MoveToTopicDirectory(result, topic);
         result = RenameRecordingForTopic(result);
-        result = RenameTranscriptForTopic(result);
         var path = Path.Combine(result.SessionDirectory, NotesFileNameForTopic(result.Name));
         File.WriteAllText(path, minutesMarkdown.Trim() + Environment.NewLine, Encoding.UTF8);
         return result with { MinutesPath = path };
     }
 
     public static string TranscriptFileNameForTopic(string topic) => $"transcription-{SlugOrUntitled(topic)}.md";
+
+    public static string TranscriptFileNameForModel(string topic, string modelId) =>
+        $"transcription-{SlugOrUntitled(modelId)}-{SlugOrUntitled(topic)}.md";
 
     public static string NotesFileNameForTopic(string topic) => $"notes-{SlugOrUntitled(topic)}.md";
 
@@ -130,40 +155,6 @@ public static class MeetingArtifactStore
         };
     }
 
-    private static RecordingResult RenameTranscriptForTopic(RecordingResult result)
-    {
-        if (string.IsNullOrWhiteSpace(result.TranscriptPath) || !File.Exists(result.TranscriptPath))
-        {
-            return result;
-        }
-
-        var target = Path.Combine(result.SessionDirectory, TranscriptFileNameForTopic(result.Name));
-        if (SamePath(target, result.TranscriptPath))
-        {
-            return result;
-        }
-
-        if (File.Exists(target))
-        {
-            return result with { TranscriptPath = target };
-        }
-
-        try
-        {
-            File.Move(result.TranscriptPath, target);
-        }
-        catch (IOException)
-        {
-            return result;
-        }
-        catch (UnauthorizedAccessException)
-        {
-            return result;
-        }
-
-        return result with { TranscriptPath = target };
-    }
-
     private static string SlugOrUntitled(string value)
     {
         var slug = Slugify(value);
@@ -219,13 +210,28 @@ public static class MeetingArtifactStore
         };
     }
 
-    private static string BuildTranscriptMarkdown(RecordingResult result, string transcript)
+    private static string BuildTranscriptMarkdown(
+        RecordingResult result,
+        string transcript,
+        TranscriptionModelOption model,
+        string? compressedAudioPath,
+        IReadOnlyList<string> generalTerms)
     {
         var builder = new StringBuilder();
         builder.AppendLine($"# Speaker Transcript - {result.Name}");
         builder.AppendLine();
         builder.AppendLine($"Recorded: {result.StartedAt:yyyy-MM-dd HH:mm}");
         builder.AppendLine($"Duration: {result.Duration.TotalMinutes:F1} minutes");
+        builder.AppendLine($"Transcription model: {model.DisplayName} ({model.Id})");
+        builder.AppendLine($"Speaker diarization: {(model.IncludesSpeakerDiarization ? "included" : "not available in this model")}");
+        builder.AppendLine($"Transcription audio: {(string.IsNullOrWhiteSpace(compressedAudioPath) ? "compressed MP3" : Path.GetFileName(compressedAudioPath))}");
+        if (generalTerms.Count > 0)
+        {
+            builder.AppendLine(model.SupportsGeneralTerms
+                ? $"General terms applied: {string.Join(", ", generalTerms)}"
+                : "General terms applied: model API does not support vocabulary hints");
+        }
+        builder.AppendLine($"Created: {DateTime.Now:yyyy-MM-dd HH:mm:ss}");
         builder.AppendLine();
         builder.AppendLine("## Transcript");
         builder.AppendLine();

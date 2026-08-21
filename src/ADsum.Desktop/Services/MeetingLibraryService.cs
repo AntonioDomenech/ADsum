@@ -37,6 +37,7 @@ public sealed partial class MeetingLibraryService
         var folderName = info.Name;
         var (startedAt, topic) = ParseFolderName(folderName);
         var recordingPath = FindRecordingPath(directory, topic);
+        var transcriptVersions = FindTranscriptVersions(directory);
         return new MeetingLibraryItem(
             topic,
             directory,
@@ -44,8 +45,10 @@ public sealed partial class MeetingLibraryService
             info.LastWriteTime,
             recordingPath,
             ReadRecordingDuration(recordingPath),
-            FindTranscriptPath(directory, topic),
-            FindNotesPath(directory, topic));
+            FindCompressedRecordingPath(directory),
+            transcriptVersions.FirstOrDefault()?.Path,
+            FindNotesPath(directory, topic),
+            transcriptVersions);
     }
 
     private static TimeSpan? ReadRecordingDuration(string? recordingPath)
@@ -114,13 +117,6 @@ public sealed partial class MeetingLibraryService
         return null;
     }
 
-    private static string? FindTranscriptPath(string directory, string topic) =>
-        FirstExistingPath(
-            directory,
-            MeetingArtifactStore.TranscriptFileNameForTopic(topic),
-            MeetingArtifactStore.LegacyTranscriptFileName)
-        ?? FirstMatchingPath(directory, "transcription-*.md");
-
     private static string? FindRecordingPath(string directory, string topic) =>
         FirstExistingPath(
             directory,
@@ -128,6 +124,39 @@ public sealed partial class MeetingLibraryService
             MeetingArtifactStore.RecordingFileName,
             "mixed.wav")
         ?? FirstMatchingPath(directory, "recording-*.wav");
+
+    private static string? FindCompressedRecordingPath(string directory)
+    {
+        var path = Path.Combine(directory, AudioCompressionService.CompressedFileName);
+        return File.Exists(path) ? path : null;
+    }
+
+    private static IReadOnlyList<TranscriptVersion> FindTranscriptVersions(string directory)
+    {
+        return Directory
+            .EnumerateFiles(directory, "transcription*.md")
+            .Select(path => new TranscriptVersion(
+                ModelIdFromTranscriptFile(path),
+                TranscriptionModelCatalog.DisplayNameFor(ModelIdFromTranscriptFile(path)),
+                path,
+                File.GetLastWriteTime(path)))
+            .OrderByDescending(version => version.LastWriteTime)
+            .ToList();
+    }
+
+    private static string ModelIdFromTranscriptFile(string path)
+    {
+        var fileName = Path.GetFileName(path);
+        foreach (var model in TranscriptionModelCatalog.All)
+        {
+            if (fileName.StartsWith($"transcription-{model.Id}-", StringComparison.OrdinalIgnoreCase))
+            {
+                return model.Id;
+            }
+        }
+
+        return TranscriptionModelCatalog.LegacyId;
+    }
 
     private static string? FindNotesPath(string directory, string topic) =>
         FirstExistingPath(
