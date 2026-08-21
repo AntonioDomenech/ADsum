@@ -85,7 +85,7 @@ public partial class App : Application
     private static async Task ReportExclusiveInstanceConflictAsync(string[] args)
     {
         const string error =
-            "Another ADsum v3.2 process is already using recording or transcription. " +
+            "Another ADsum v3.2.1 process is already using recording or transcription. " +
             "Use that window, or wait for its offline transcription to finish.";
 
         if (HasArgument(args, "--transcribe-meeting") ||
@@ -126,7 +126,7 @@ public partial class App : Application
 
         MessageBox.Show(
             error,
-            "ADsum v3.2 is already running",
+            "ADsum v3.2.1 is already running",
             MessageBoxButton.OK,
             MessageBoxImage.Information);
         Current.Shutdown(2);

@@ -26,6 +26,7 @@ try
     RunCompatibilityChecks(root);
     RunLibraryDurationChecks(root);
     RunCompressionAndTranscriptVersionChecks(root);
+    RunDiarizedAlignmentChecks();
 }
 
 finally
@@ -145,6 +146,83 @@ void RunCompressionAndTranscriptVersionChecks(string directory)
         "transcript metadata did not record applied general terms");
 
     Console.WriteLine($"PASS compression_bytes={firstLength} local_mp3_source=true transcript_versions={meeting.TranscriptVersions.Count}");
+}
+
+void RunDiarizedAlignmentChecks()
+{
+    Assert(
+        TranscriptionModelCatalog.All.All(model => model.IncludesSpeakerDiarization),
+        "the model catalog still contains a choice without speaker diarization");
+
+    var speakerSegments = new[]
+    {
+        new DiarizedTextSegment(
+            TimeSpan.Zero,
+            TimeSpan.FromSeconds(4),
+            "speaker_0",
+            "Welcome to Add some and Sir Tania."),
+        new DiarizedTextSegment(
+            TimeSpan.FromSeconds(4),
+            TimeSpan.FromSeconds(8),
+            "speaker_1",
+            "We use Luca net for finance.")
+    };
+    var corrected = DiarizedTranscriptAligner.Align(
+        "Welcome to ADsum and CERTANIA. We use LucaNet for finance.",
+        speakerSegments);
+    Assert(corrected.UsedAccurateText, "the normal two-pass transcript did not use GPT Transcribe wording");
+    Assert(corrected.Segments.Count == 2, "alignment changed the number of speaker segments");
+    Assert(corrected.Segments[0].Speaker == "speaker_0" && corrected.Segments[1].Speaker == "speaker_1",
+        "alignment changed speaker identities");
+    Assert(corrected.Segments[0].Text.Contains("ADsum", StringComparison.Ordinal) &&
+           corrected.Segments[0].Text.Contains("CERTANIA", StringComparison.Ordinal),
+        "term corrections did not remain with the first speaker");
+    Assert(corrected.Segments[1].Text.Contains("LucaNet", StringComparison.Ordinal),
+        "term correction did not remain with the second speaker");
+    Assert(corrected.Segments[0].Start == TimeSpan.Zero &&
+           corrected.Segments[1].End == TimeSpan.FromSeconds(8),
+        "alignment changed speaker timestamps");
+
+    var changedWordCount = DiarizedTranscriptAligner.Align(
+        "Today we carefully review CERTANIA finance dashboard. Tomorrow publish the LucaNet report.",
+        new[]
+        {
+            new DiarizedTextSegment(
+                TimeSpan.Zero,
+                TimeSpan.FromSeconds(5),
+                "speaker_0",
+                "Today we review the finance dashboard."),
+            new DiarizedTextSegment(
+                TimeSpan.FromSeconds(5),
+                TimeSpan.FromSeconds(10),
+                "speaker_1",
+                "Tomorrow we publish the report.")
+        });
+    Assert(changedWordCount.UsedAccurateText, "insertions and deletions made a safe alignment fail");
+    Assert(changedWordCount.Segments[0].Text.Contains("carefully", StringComparison.Ordinal),
+        "an inserted first-speaker word was lost");
+    Assert(changedWordCount.Segments[1].Text.Contains("LucaNet", StringComparison.Ordinal),
+        "an inserted second-speaker term crossed the speaker boundary");
+
+    var unsafeAlignment = DiarizedTranscriptAligner.Align(
+        "one two three four",
+        new[]
+        {
+            new DiarizedTextSegment(
+                TimeSpan.Zero,
+                TimeSpan.FromSeconds(2),
+                "speaker_0",
+                "alpha beta gamma delta")
+        });
+    Assert(unsafeAlignment.UsedAccurateText, "the fallback stopped treating GPT Transcribe as authoritative");
+    Assert(unsafeAlignment.UsedProportionalFallback,
+        "unrelated transcripts did not activate the proportional speaker fallback");
+    Assert(unsafeAlignment.Segments[0].Text == "one two three four",
+        "the fallback used diarization-model wording instead of GPT Transcribe wording");
+
+    Console.WriteLine(
+        $"PASS all_models_diarized=true alignment_ratio={corrected.ExactMatchRatio:F2} " +
+        $"gpt_wording_fallback={unsafeAlignment.UsedProportionalFallback}");
 }
 
 void RunCompatibilityChecks(string directory)

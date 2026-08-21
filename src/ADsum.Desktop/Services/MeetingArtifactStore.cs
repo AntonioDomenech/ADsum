@@ -224,6 +224,13 @@ public static class MeetingArtifactStore
         builder.AppendLine($"Duration: {result.Duration.TotalMinutes:F1} minutes");
         builder.AppendLine($"Transcription model: {model.DisplayName} ({model.Id})");
         builder.AppendLine($"Speaker diarization: {(model.IncludesSpeakerDiarization ? "included" : "not available in this model")}");
+        if (model.Id == TranscriptionModelCatalog.GptTranscribeId)
+        {
+            builder.AppendLine(
+                "Transcription pipeline: GPT Transcribe wording aligned to GPT-4o Transcribe Diarize speaker segments");
+            builder.AppendLine("Authoritative wording: GPT Transcribe");
+            builder.AppendLine("Speaker and timestamp source: GPT-4o Transcribe Diarize");
+        }
         builder.AppendLine($"Transcription audio: {(string.IsNullOrWhiteSpace(compressedAudioPath) ? "compressed MP3" : Path.GetFileName(compressedAudioPath))}");
         if (generalTerms.Count > 0)
         {

@@ -62,20 +62,20 @@ public sealed class OpenAiTranscriptionService
         {
             try
             {
-                var single = await TranscribeSingleFileAsync(
+                var single = await TranscribeSelectedSingleFileAsync(
                         audioPath,
                         apiKey,
                         model,
                         normalizedTerms,
                         TimeSpan.Zero,
+                        progress,
                         cancellationToken)
                     .ConfigureAwait(false);
-                return model.IncludesSpeakerDiarization
-                    ? FormatDiarizedTranscript(single, wasChunked: false)
-                    : single.Text.Trim();
+                return FormatDiarizedTranscript(single, wasChunked: false);
             }
             catch (InvalidOperationException ex) when (
-                model.Id == TranscriptionModelCatalog.Gpt4oTranscribeDiarizeId &&
+                (model.Id == TranscriptionModelCatalog.Gpt4oTranscribeDiarizeId ||
+                 model.Id == TranscriptionModelCatalog.GptTranscribeId) &&
                 IsRecoverableFullRecordingError(ex))
             {
                 progress?.Report("The full recording exceeded the speaker-model limit; splitting the compressed MP3");
@@ -96,48 +96,14 @@ public sealed class OpenAiTranscriptionService
                 throw new InvalidDataException("The compressed MP3 did not contain readable audio.");
             }
 
-            return model.IncludesSpeakerDiarization
-                ? await TranscribeDiarizedChunksAsync(
-                        chunks, apiKey, model, normalizedTerms, progress, cancellationToken)
-                    .ConfigureAwait(false)
-                : await TranscribePlainChunksAsync(
-                        chunks, apiKey, model, normalizedTerms, progress, cancellationToken)
-                    .ConfigureAwait(false);
+            return await TranscribeDiarizedChunksAsync(
+                    chunks, apiKey, model, normalizedTerms, progress, cancellationToken)
+                .ConfigureAwait(false);
         }
         finally
         {
             TryDeleteDirectory(tempDirectory);
         }
-    }
-
-    private static async Task<string> TranscribePlainChunksAsync(
-        IReadOnlyList<UploadChunk> chunks,
-        string apiKey,
-        TranscriptionModelOption model,
-        IReadOnlyList<string> generalTerms,
-        IProgress<string>? progress,
-        CancellationToken cancellationToken)
-    {
-        var text = new StringBuilder();
-        for (var index = 0; index < chunks.Count; index++)
-        {
-            progress?.Report($"Transcribing MP3 part {index + 1} of {chunks.Count} with {model.DisplayName}");
-            var result = await TranscribeSingleFileAsync(
-                    chunks[index].Path,
-                    apiKey,
-                    model,
-                    generalTerms,
-                    chunks[index].Offset,
-                    cancellationToken)
-                .ConfigureAwait(false);
-            if (!string.IsNullOrWhiteSpace(result.Text))
-            {
-                text.AppendLine(result.Text.Trim());
-                text.AppendLine();
-            }
-        }
-
-        return text.ToString().Trim();
     }
 
     private static async Task<string> TranscribeDiarizedChunksAsync(
@@ -148,18 +114,20 @@ public sealed class OpenAiTranscriptionService
         IProgress<string>? progress,
         CancellationToken cancellationToken)
     {
-        var segments = new List<DiarizedSegment>();
+        var segments = new List<DiarizedTextSegment>();
         var fallbackText = new StringBuilder();
+        var notices = new List<string>();
         for (var index = 0; index < chunks.Count; index++)
         {
             var chunk = chunks[index];
-            progress?.Report($"Diarizing MP3 part {index + 1} of {chunks.Count}");
-            var result = await TranscribeSingleFileAsync(
+            progress?.Report($"Transcribing and diarizing MP3 part {index + 1} of {chunks.Count}");
+            var result = await TranscribeSelectedSingleFileAsync(
                     chunk.Path,
                     apiKey,
                     model,
                     generalTerms,
                     chunk.Offset,
+                    progress,
                     cancellationToken)
                 .ConfigureAwait(false);
             segments.AddRange(result.Segments.Select(segment =>
@@ -169,11 +137,67 @@ public sealed class OpenAiTranscriptionService
                 fallbackText.AppendLine(result.Text.Trim());
                 fallbackText.AppendLine();
             }
+            if (!string.IsNullOrWhiteSpace(result.Notice))
+            {
+                notices.Add($"Part {chunk.Index}: {result.Notice}");
+            }
         }
 
         return FormatDiarizedTranscript(
-            new TranscriptionResponse(segments, fallbackText.ToString()),
+            new TranscriptionResponse(
+                segments,
+                fallbackText.ToString(),
+                notices.Count == 0 ? null : string.Join(" ", notices)),
             wasChunked: true);
+    }
+
+    private static async Task<TranscriptionResponse> TranscribeSelectedSingleFileAsync(
+        string audioPath,
+        string apiKey,
+        TranscriptionModelOption selectedModel,
+        IReadOnlyList<string> generalTerms,
+        TimeSpan offset,
+        IProgress<string>? progress,
+        CancellationToken cancellationToken)
+    {
+        if (selectedModel.Id != TranscriptionModelCatalog.GptTranscribeId)
+        {
+            return await TranscribeSingleFileAsync(
+                    audioPath,
+                    apiKey,
+                    selectedModel,
+                    generalTerms,
+                    offset,
+                    cancellationToken)
+                .ConfigureAwait(false);
+        }
+
+        progress?.Report("Running GPT Transcribe wording and GPT-4o speaker labeling in parallel");
+        var wordingModel = TranscriptionModelCatalog.Resolve(TranscriptionModelCatalog.GptTranscribeId);
+        var speakerModel = TranscriptionModelCatalog.Resolve(TranscriptionModelCatalog.Gpt4oTranscribeDiarizeId);
+        var wordingTask = TranscribeSingleFileAsync(
+            audioPath,
+            apiKey,
+            wordingModel,
+            generalTerms,
+            offset,
+            cancellationToken);
+        var speakerTask = TranscribeSingleFileAsync(
+            audioPath,
+            apiKey,
+            speakerModel,
+            Array.Empty<string>(),
+            offset,
+            cancellationToken);
+        await Task.WhenAll(wordingTask, speakerTask).ConfigureAwait(false);
+
+        var wording = await wordingTask.ConfigureAwait(false);
+        var speakerTranscript = await speakerTask.ConfigureAwait(false);
+        var alignment = DiarizedTranscriptAligner.Align(wording.Text, speakerTranscript.Segments);
+        var notice = alignment.UsedProportionalFallback
+            ? $"GPT Transcribe remained the authoritative wording. {alignment.Reason}"
+            : null;
+        return new TranscriptionResponse(alignment.Segments, wording.Text, notice);
     }
 
     private static async Task<TranscriptionResponse> TranscribeSingleFileAsync(
@@ -219,7 +243,7 @@ public sealed class OpenAiTranscriptionService
                 $"OpenAI transcription failed with {model.DisplayName}: {(int)response.StatusCode} {response.ReasonPhrase}\n{body}");
         }
 
-        return model.IncludesSpeakerDiarization
+        return model.Id == TranscriptionModelCatalog.Gpt4oTranscribeDiarizeId
             ? ParseDiarizedResponse(body, offset)
             : ParsePlainResponse(body);
     }
@@ -230,7 +254,7 @@ public sealed class OpenAiTranscriptionService
         var text = document.RootElement.TryGetProperty("text", out var textElement)
             ? textElement.GetString() ?? ""
             : "";
-        return new TranscriptionResponse([], text);
+        return new TranscriptionResponse([], text, null);
     }
 
     private static TranscriptionResponse ParseDiarizedResponse(string body, TimeSpan offset)
@@ -240,7 +264,7 @@ public sealed class OpenAiTranscriptionService
         var text = root.TryGetProperty("text", out var textElement)
             ? textElement.GetString() ?? ""
             : "";
-        var segments = new List<DiarizedSegment>();
+        var segments = new List<DiarizedTextSegment>();
         if (root.TryGetProperty("segments", out var segmentElements) && segmentElements.ValueKind == JsonValueKind.Array)
         {
             foreach (var segment in segmentElements.EnumerateArray())
@@ -251,7 +275,7 @@ public sealed class OpenAiTranscriptionService
                     continue;
                 }
 
-                segments.Add(new DiarizedSegment(
+                segments.Add(new DiarizedTextSegment(
                     offset + TimeSpan.FromSeconds(ReadDouble(segment, "start")),
                     offset + TimeSpan.FromSeconds(ReadDouble(segment, "end")),
                     ReadString(segment, "speaker"),
@@ -259,18 +283,29 @@ public sealed class OpenAiTranscriptionService
             }
         }
 
-        return new TranscriptionResponse(segments, text);
+        return new TranscriptionResponse(segments, text, null);
     }
 
     private static string FormatDiarizedTranscript(TranscriptionResponse transcript, bool wasChunked)
     {
         if (transcript.Segments.Count == 0)
         {
-            return transcript.Text.Trim();
+            if (string.IsNullOrWhiteSpace(transcript.Text))
+            {
+                return "";
+            }
+
+            throw new InvalidDataException(
+                "OpenAI returned transcript text without speaker segments. ADsum did not save an un-diarized result.");
         }
 
         var labels = new SpeakerLabeler();
         var output = new StringBuilder();
+        if (!string.IsNullOrWhiteSpace(transcript.Notice))
+        {
+            output.AppendLine($"Note: {transcript.Notice}");
+            output.AppendLine();
+        }
         if (wasChunked)
         {
             output.AppendLine("Note: the compressed MP3 was split for long-meeting reliability. Speaker labels may reset between parts.");
@@ -424,8 +459,10 @@ public sealed class OpenAiTranscriptionService
         }
     }
 
-    private sealed record TranscriptionResponse(IReadOnlyList<DiarizedSegment> Segments, string Text);
-    private sealed record DiarizedSegment(TimeSpan Start, TimeSpan End, string Speaker, string Text);
+    private sealed record TranscriptionResponse(
+        IReadOnlyList<DiarizedTextSegment> Segments,
+        string Text,
+        string? Notice);
     private sealed record UploadChunk(int Index, string Path, TimeSpan Offset);
 
     private sealed class SpeakerLabeler

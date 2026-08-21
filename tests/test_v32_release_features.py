@@ -9,13 +9,26 @@ def _read(path: Path) -> str:
     return path.read_text(encoding="utf-8-sig")
 
 
-def test_model_catalog_preserves_local_and_cloud_diarization_and_adds_gpt_transcribe() -> None:
+def test_every_model_choice_includes_speaker_diarization() -> None:
     source = _read(SERVICES / "TranscriptionModelOption.cs")
 
     assert 'LocalWhisperPyannoteId = "local-whisper-pyannote"' in source
     assert 'Gpt4oTranscribeDiarizeId = "gpt-4o-transcribe-diarize"' in source
     assert 'GptTranscribeId = "gpt-transcribe"' in source
-    assert "This model has no built-in speaker diarization" in source
+    assert "OpenAI GPT Transcribe + Diarization" in source
+    assert "IncludesSpeakerDiarization: false" not in source
+
+
+def test_gpt_transcribe_runs_a_second_speaker_pass_and_aligns_the_results() -> None:
+    source = _read(SERVICES / "OpenAiTranscriptionService.cs")
+    aligner = _read(SERVICES / "DiarizedTranscriptAligner.cs")
+
+    assert "Task.WhenAll(wordingTask, speakerTask)" in source
+    assert "Gpt4oTranscribeDiarizeId" in source
+    assert "DiarizedTranscriptAligner.Align" in source
+    assert "ADsum did not save an un-diarized result" in source
+    assert "GPT Transcribe wording was distributed proportionally" in aligner
+    assert 'Authoritative wording: GPT Transcribe' in _read(SERVICES / "MeetingArtifactStore.cs")
 
 
 def test_router_always_compresses_before_selecting_a_transcription_model() -> None:

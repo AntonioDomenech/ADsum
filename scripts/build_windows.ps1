@@ -4,7 +4,7 @@ param()
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
-$Version = "3.2.0"
+$Version = "3.2.1"
 $Root = (Resolve-Path (Split-Path -Parent $PSScriptRoot)).Path
 $ProjectPath = Join-Path $Root "src\ADsum.Desktop\ADsum.Desktop.csproj"
 $PyprojectPath = Join-Path $Root "pyproject.toml"

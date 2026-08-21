@@ -40,9 +40,9 @@ public static class TranscriptionModelCatalog
             SupportsGeneralTerms: false),
         new(
             GptTranscribeId,
-            "OpenAI GPT Transcribe",
-            "New high-accuracy cloud file transcription with general-term hints. This model has no built-in speaker diarization.",
-            IncludesSpeakerDiarization: false,
+            "OpenAI GPT Transcribe + Diarization",
+            "High-accuracy, term-guided GPT Transcribe wording combined with GPT-4o speaker labels and timestamps. This uses two OpenAI transcription passes.",
+            IncludesSpeakerDiarization: true,
             RequiresOpenAiKey: true,
             SupportsGeneralTerms: true)
     ];

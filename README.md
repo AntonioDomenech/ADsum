@@ -2,9 +2,9 @@
 
 ADsum is a cross-platform meeting recorder designed to capture system audio and microphone streams simultaneously, transcribe the conversation, and generate actionable notes. The repository is organised following a modular architecture so the audio engine, orchestration pipeline, transcription backends, and note generators can evolve independently.
 
-## ADsum v3.2 desktop app
+## ADsum v3.2.1 desktop app
 
-ADsum v3.2 is a Windows-first .NET desktop app with a WPF UI and native WASAPI audio capture. It records the selected microphone and a WASAPI loopback stream from the selected output device at the same time, so it can capture your headset mic and the meeting audio you hear without taking exclusive control of playback.
+ADsum v3.2.1 is a Windows-first .NET desktop app with a WPF UI and native WASAPI audio capture. It records the selected microphone and a WASAPI loopback stream from the selected output device at the same time, so it can capture your headset mic and the meeting audio you hear without taking exclusive control of playback.
 
 Run it from source:
 
@@ -12,7 +12,7 @@ Run it from source:
 dotnet run --project .\src\ADsum.Desktop\ADsum.Desktop.csproj
 ```
 
-The desktop app targets .NET 10 on Windows and now lets the user choose a transcription model for each run. The original private local pipeline remains the default: [faster-whisper](https://github.com/SYSTRAN/faster-whisper) runs multilingual Whisper `large-v3-turbo`, and [pyannote Community-1](https://huggingface.co/pyannote/speaker-diarization-community-1) assigns meeting-global anonymous labels such as `Speaker A`, `Speaker B`, and `Speaker C`. Two opt-in OpenAI choices are also available: `gpt-4o-transcribe-diarize` for cloud transcription with speaker labels, and `gpt-transcribe` for high-accuracy file transcription without built-in speaker diarization. Audio leaves the computer only when the user selects an OpenAI model.
+The desktop app targets .NET 10 on Windows and lets the user choose a transcription model for each run. The original private local pipeline remains the default: [faster-whisper](https://github.com/SYSTRAN/faster-whisper) runs multilingual Whisper `large-v3-turbo`, and [pyannote Community-1](https://huggingface.co/pyannote/speaker-diarization-community-1) assigns meeting-global anonymous labels such as `Speaker A`, `Speaker B`, and `Speaker C`. Two opt-in OpenAI choices are also available. `gpt-4o-transcribe-diarize` provides cloud transcription with built-in speaker labels. The `gpt-transcribe` choice runs GPT Transcribe and GPT-4o Transcribe Diarize in parallel, keeps GPT Transcribe as the authoritative wording, and uses GPT-4o only for speaker labels and timestamps. Every selectable model therefore produces diarized output. Audio leaves the computer only when the user selects an OpenAI model.
 
 All transcription models run only after recording has stopped. They are not loaded during a meeting, so Teams, Zoom, Meet, and ADsum's recorder retain the computer's memory, GPU, and processor. Local speech jobs run one at a time, and a new recording immediately preempts an older local transcription job.
 
@@ -42,7 +42,7 @@ ADsum no longer restarts speaker identity every five minutes. faster-whisper con
 
 OpenAI remains optional. A key saved in the app, `ADSUM_OPENAI_API_KEY` / `OPENAI_API_KEY`, or a local `.env` file enables the two cloud transcription choices and meeting-note generation. Meeting minutes default to `gpt-5.5`; set `ADSUM_OPENAI_NOTES_MODEL=gpt-5.4-mini` for a lower-cost notes model. If the short OpenAI meeting-title request is unavailable, ADsum uses its existing local title fallback. Set `ADSUM_LOCAL_TOPIC_ONLY=1` to force that local title path and prevent the optional title request from sending a transcript excerpt.
 
-The **General** tab stores a default transcription model and reusable spelling terms such as company names, product names, and abbreviations. Terms are entered one per line and are applied to the local Whisper and `gpt-transcribe` requests. OpenAI's specialized `gpt-4o-transcribe-diarize` endpoint does not accept vocabulary hints, so ADsum states that limitation in the model description and transcript provenance instead of pretending the terms were used.
+The **General** tab stores a default transcription model and reusable spelling terms such as company names, product names, and abbreviations. Terms are entered one per line and are applied to the local Whisper and authoritative `gpt-transcribe` requests. OpenAI's specialized `gpt-4o-transcribe-diarize` endpoint does not accept vocabulary hints, so ADsum states that limitation in the direct diarization model description and transcript provenance instead of pretending the terms were used.
 
 Build a Windows release artifact:
 
@@ -52,8 +52,8 @@ Build a Windows release artifact:
 
 The build creates:
 
-- `dist\ADsum-v3.2.0-windows-x64.zip`
-- `dist\ADsum-v3.2.0-windows-x64.zip.sha256`
+- `dist\ADsum-v3.2.1-windows-x64.zip`
+- `dist\ADsum-v3.2.1-windows-x64.zip.sha256`
 
 The ZIP is a self-contained Windows bundle that can be attached to a GitHub Release. It contains the .NET runtime, local speech worker, pinned requirements, setup script, and documentation, but no model weights or API keys. The checksum file lets a downloader verify that the ZIP arrived unchanged.
 
@@ -79,7 +79,7 @@ Non-silent model output must contain valid timestamps and speaker labels; malfor
 - Streaming-friendly recording pipeline that writes directly to disk.
 - In-app meeting library for reviewing previous recordings, transcripts, and minutes.
 - Storage layer backed by SQLite for recording metadata, transcripts, and notes.
-- Selectable local or OpenAI transcription, including two speaker-aware choices and the high-accuracy `gpt-transcribe` file model.
+- Selectable local or OpenAI transcription, with speaker labels in every option and authoritative `gpt-transcribe` wording in the combined high-accuracy cloud choice.
 - Verified speech-optimized MP3 sidecars while preserving every original WAV.
 - Reusable global spelling terms and retained model-specific transcript versions.
 - OpenAI meeting-minutes generation for summaries, discussion points, next steps, and decisions.
@@ -205,7 +205,7 @@ The Windows desktop offers these model identifiers:
 
 - `local-whisper-pyannote`: private local transcription with whole-meeting speaker labels; this remains the default.
 - `gpt-4o-transcribe-diarize`: OpenAI cloud transcription with speaker labels; reusable terms are not supported by this endpoint.
-- `gpt-transcribe`: OpenAI cloud file transcription with reusable term hints but no built-in speaker labels.
+- `gpt-transcribe`: two parallel OpenAI requests; GPT Transcribe supplies authoritative term-guided wording and GPT-4o Transcribe Diarize supplies speaker labels and timestamps.
 
 The same choices are available to release-validation commands. These commands always create or reuse the compressed MP3 first:
 

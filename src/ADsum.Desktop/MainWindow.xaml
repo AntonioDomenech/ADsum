@@ -11,7 +11,7 @@
 
         <DockPanel Grid.Row="0">
             <StackPanel DockPanel.Dock="Left" VerticalAlignment="Center">
-                <TextBlock Text="ADsum v3.2" Foreground="{StaticResource AccentBrush}" FontSize="12" FontWeight="Bold" />
+                <TextBlock Text="ADsum v3.2.1" Foreground="{StaticResource AccentBrush}" FontSize="12" FontWeight="Bold" />
                 <TextBlock Text="Meeting Recorder" FontSize="34" FontWeight="Bold" />
             </StackPanel>
             <Border DockPanel.Dock="Right" Background="White" BorderBrush="{StaticResource LineBrush}" BorderThickness="1"
